@@ -43,6 +43,7 @@ final class ExplorerTabController: NSViewController {
     private var previewURLs: [URL] = []
     private var sidebarLoadTasks: [URL: Task<Void, Never>] = [:]
     private var sidebarRevealTask: Task<Void, Never>?
+    private var pendingInlineRenameURL: URL?
 
     init(
         homeURL: URL,
@@ -143,6 +144,9 @@ final class ExplorerTabController: NSViewController {
 
     func canPerformFileCommand(_ command: BrowserFileCommand) -> Bool {
         switch command {
+        case .open: !selection.isEmpty
+        case .openInNewTab: selectedRows.contains(where: \.isNavigable)
+        case .revealInFinder: !selection.isEmpty
         case .newFolder: currentDirectoryURL != nil
         case .rename: currentDirectoryURL != nil && selection.count == 1
         case .copy, .cut, .duplicate, .moveToTrash: !selection.isEmpty
@@ -154,16 +158,23 @@ final class ExplorerTabController: NSViewController {
     func performFileCommand(_ command: BrowserFileCommand) {
         guard canPerformFileCommand(command) else { return }
         switch command {
+        case .open:
+            openSelection()
+        case .openInNewTab:
+            selectedRows.filter(\.isNavigable).forEach { onOpenLocationInNewTab?($0.url) }
+        case .revealInFinder:
+            NSWorkspace.shared.activateFileViewerSelecting(Array(selection))
         case .newFolder:
-            promptForName(title: "New Folder", message: "Enter a name for the new folder.", defaultValue: "New Folder") { [weak self] name in
-                guard let self, let currentDirectoryURL else { return }
-                submit(.createFolder(at: currentDirectoryURL, name: name, conflictPolicy: .fail))
+            guard let currentDirectoryURL else { return }
+            submit(.createFolder(at: currentDirectoryURL, name: "New Folder", conflictPolicy: .keepBoth)) { [weak self] result in
+                guard let destination = result.items.first(where: { $0.status == .completed })?.destination else { return }
+                self?.selection = [destination]
+                self?.pendingInlineRenameURL = destination
             }
         case .rename:
             guard let source = selection.first else { return }
-            promptForName(title: "Rename", message: "Enter a new name.", defaultValue: source.lastPathComponent) { [weak self] name in
-                self?.submit(.rename(source: source, name: name, conflictPolicy: .fail))
-            }
+            if viewMode != .details { setViewMode(.details) }
+            browser.beginRenaming(source)
         case .copy:
             writeClipboard(intent: .copy)
         case .cut:
@@ -225,6 +236,8 @@ final class ExplorerTabController: NSViewController {
     }
 
     private func configureCallbacks() {
+        browser.onNavigationCommand = { [weak self] command in self?.perform(command) }
+        browser.onViewModeSelection = { [weak self] mode in self?.setViewMode(mode) }
         browser.onPathSubmission = { [weak self] path in
             guard let self else { return }
             self.requestDirectory(self.url(forSubmittedPath: path), origin: .newLocation)
@@ -237,6 +250,12 @@ final class ExplorerTabController: NSViewController {
         browser.onOpenSidebarLocationInNewTab = { [weak self] url in self?.onOpenLocationInNewTab?(url) }
         browser.onRemoveSidebarFavorite = { [weak self] url in self?.onRemoveFavorite?(url) }
         browser.onOpenFileRow = { [weak self] row in self?.open(row) }
+        browser.onRenameSubmission = { [weak self] source, name in
+            self?.submit(.rename(source: source, name: name, conflictPolicy: .fail)) { [weak self] result in
+                guard let destination = result.items.first(where: { $0.status == .completed })?.destination else { return }
+                self?.selection = [destination]
+            }
+        }
         browser.onSelectionChange = { [weak self] urls in
             self?.selection = urls
             self?.onSelectionChange?(urls)
@@ -355,8 +374,18 @@ final class ExplorerTabController: NSViewController {
         currentDirectoryURL = snapshot.directoryURL
         currentSnapshot = snapshot
         selection.formIntersection(Set(snapshot.items.map(\.url)))
+        if let pendingInlineRenameURL,
+           snapshot.items.contains(where: { $0.url == pendingInlineRenameURL }) {
+            selection = [pendingInlineRenameURL]
+        }
         browser.displayPath(snapshot.directoryURL.path)
         browser.displayRows(snapshot.items.map(BrowserFileRow.init), selecting: selection)
+        if let pendingInlineRenameURL,
+           snapshot.items.contains(where: { $0.url == pendingInlineRenameURL }) {
+            self.pendingInlineRenameURL = nil
+            if viewMode != .details { setViewMode(.details) }
+            browser.beginRenaming(pendingInlineRenameURL)
+        }
         revealCurrentDirectoryInSidebar(snapshot.directoryURL)
         onTitleChange?(displayTitle)
         let label = "\(snapshot.items.count) \(snapshot.items.count == 1 ? "item" : "items")"
@@ -369,6 +398,27 @@ final class ExplorerTabController: NSViewController {
     private func open(_ row: BrowserFileRow) {
         if row.isNavigable { requestDirectory(row.url, origin: .newLocation); return }
         if !NSWorkspace.shared.open(row.url) { browser.showStatus("Unable to open \(row.name) with its default application.") }
+    }
+
+    private var selectedRows: [BrowserFileRow] {
+        currentSnapshot?.items
+            .filter { selection.contains($0.url) }
+            .map(BrowserFileRow.init) ?? []
+    }
+
+    private func openSelection() {
+        let rows = selectedRows
+        if rows.count == 1, let row = rows.first {
+            open(row)
+            return
+        }
+        for row in rows {
+            if row.isNavigable {
+                onOpenLocationInNewTab?(row.url)
+            } else if !NSWorkspace.shared.open(row.url) {
+                browser.showStatus("Unable to open \(row.name) with its default application.")
+            }
+        }
     }
 
     private func url(forSubmittedPath path: String) -> URL {
@@ -481,7 +531,7 @@ final class ExplorerTabController: NSViewController {
         submit(operation)
     }
 
-    private func submit(_ operation: FileOperation) {
+    private func submit(_ operation: FileOperation, completion: ((FileOperationResult) -> Void)? = nil) {
         let queue = operationQueue
         Task { [weak self] in
             let id = await queue.submit(operation)
@@ -492,6 +542,7 @@ final class ExplorerTabController: NSViewController {
                 let result = try await queue.result(for: id)
                 guard self.pendingOperationIDs.remove(id) != nil else { return }
                 self.onOperationCompleted?(operation, result)
+                completion?(result)
                 self.browser.showStatus("\(operation.kind.rawValue) completed.")
                 self.perform(.refresh)
             } catch {
@@ -554,29 +605,6 @@ final class ExplorerTabController: NSViewController {
         }
     }
 
-    private func promptForName(
-        title: String,
-        message: String,
-        defaultValue: String,
-        completion: @escaping (String) -> Void
-    ) {
-        guard let window = view.window else { return }
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: title == "Rename" ? "Rename" : "Create")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(string: defaultValue)
-        field.frame.size = NSSize(width: 280, height: 24)
-        field.setAccessibilityLabel("Name")
-        alert.accessoryView = field
-        alert.beginSheetModal(for: window) { response in
-            guard response == .alertFirstButtonReturn else { return }
-            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { return }
-            completion(name)
-        }
-    }
 }
 
 extension ExplorerTabController: QLPreviewPanelDataSource, QLPreviewPanelDelegate {

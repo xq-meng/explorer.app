@@ -26,12 +26,19 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         componentStack.alignment = .centerY
         componentStack.spacing = 2
         componentStack.edgeInsets = NSEdgeInsets(top: 2, left: 7, bottom: 2, right: 4)
+        componentStack.translatesAutoresizingMaskIntoConstraints = false
 
         scrollView.documentView = componentStack
         scrollView.drawsBackground = false
         scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            componentStack.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            componentStack.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            componentStack.bottomAnchor.constraint(equalTo: scrollView.contentView.bottomAnchor),
+            componentStack.heightAnchor.constraint(equalTo: scrollView.contentView.heightAnchor),
+        ])
 
         pathField.placeholderString = "Enter a folder path"
         pathField.isHidden = true

@@ -21,8 +21,9 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         outlineView.outlineTableColumn = column
         outlineView.headerView = nil
         outlineView.style = .sourceList
-        outlineView.rowHeight = 25
-        outlineView.indentationPerLevel = 14
+        outlineView.rowHeight = 24
+        outlineView.indentationPerLevel = 13
+        outlineView.backgroundColor = .clear
         outlineView.delegate = self
         outlineView.dataSource = self
         outlineView.target = self

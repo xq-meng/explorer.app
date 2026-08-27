@@ -7,6 +7,8 @@ import AppKit
 /// access into the view hierarchy.
 @MainActor
 public final class ExplorerBrowserViewController: NSViewController {
+    public var onNavigationCommand: ((BrowserNavigationCommand) -> Void)?
+    public var onViewModeSelection: ((BrowserViewMode) -> Void)?
     public var onPathSubmission: ((String) -> Void)?
     public var onBreadcrumbSelection: ((URL) -> Void)?
     public var onSidebarLocationSelection: ((BrowserSidebarLocation) -> Void)?
@@ -14,6 +16,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     public var onOpenSidebarLocationInNewTab: ((URL) -> Void)?
     public var onRemoveSidebarFavorite: ((URL) -> Void)?
     public var onOpenFileRow: ((BrowserFileRow) -> Void)?
+    public var onRenameSubmission: ((URL, String) -> Void)?
     public var onSelectionChange: ((Set<URL>) -> Void)?
     public var onSidebarWidthChange: ((CGFloat) -> Void)?
     public var onSearchQueryChange: ((String) -> Void)?
@@ -25,6 +28,7 @@ public final class ExplorerBrowserViewController: NSViewController {
 
     private let breadcrumbBar = BrowserBreadcrumbBar()
     private let searchField = NSSearchField()
+    private let viewModeControl = NSSegmentedControl()
     private let statusLabel = NSTextField(labelWithString: "Ready")
     private let statusSummaryLabel = NSTextField(labelWithString: "0 items")
     private let fileTableView = NSTableView()
@@ -36,12 +40,16 @@ public final class ExplorerBrowserViewController: NSViewController {
     private weak var contentSplitView: NSSplitView?
     private weak var listScrollView: NSScrollView?
     private weak var iconScrollView: NSScrollView?
+    private var renamingURL: URL?
+    private var renameWasCancelled = false
 
     public private(set) var viewMode: BrowserViewMode = .details
     public private(set) var isPreviewVisible = true
 
     public override func loadView() {
         view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         let splitView = makeSplitView()
         view.addSubview(splitView)
         NSLayoutConstraint.activate([
@@ -94,11 +102,43 @@ public final class ExplorerBrowserViewController: NSViewController {
         refreshSelectionPresentation()
     }
 
+    /// Starts Windows Explorer-style editing in the Name column. Filesystem
+    /// mutation remains owned by the app layer through `onRenameSubmission`.
+    public func beginRenaming(_ url: URL) {
+        let target = url.standardizedFileURL
+        guard viewMode == .details,
+              let row = fileRows.firstIndex(where: { $0.browserRow.url == target }),
+              let column = fileTableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" }) else { return }
+
+        renamingURL = target
+        renameWasCancelled = false
+        fileTableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        fileTableView.scrollRowToVisible(row)
+        fileTableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: column))
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.renamingURL == target,
+                  let cell = self.fileTableView.view(atColumn: column, row: row, makeIfNecessary: true) as? NSTableCellView,
+                  let field = cell.textField else { return }
+            field.isEditable = true
+            field.isSelectable = true
+            field.drawsBackground = true
+            field.backgroundColor = .textBackgroundColor
+            field.isBezeled = true
+            self.view.window?.makeFirstResponder(field)
+            let name = field.stringValue as NSString
+            let pathExtension = (field.stringValue as NSString).pathExtension
+            let selectionLength = pathExtension.isEmpty ? name.length : max(0, name.length - (pathExtension as NSString).length - 1)
+            field.currentEditor()?.selectedRange = NSRange(location: 0, length: selectionLength)
+        }
+    }
+
     public func setViewMode(_ mode: BrowserViewMode) {
         let selectedIndexes = viewMode == .details
             ? fileTableView.selectedRowIndexes
             : collectionView.selectionIndexes
         viewMode = mode
+        viewModeControl.selectedSegment = mode == .icons ? 1 : 0
         fileTableView.selectRowIndexes(selectedIndexes, byExtendingSelection: false)
         collectionView.selectionIndexes = selectedIndexes
         updateViewMode()
@@ -118,7 +158,11 @@ public final class ExplorerBrowserViewController: NSViewController {
 
     public func setSidebarWidth(_ width: CGFloat) {
         guard let splitView, splitView.subviews.count > 1 else { return }
-        splitView.setPosition(max(160, width), ofDividerAt: 0)
+        let position = max(180, min(380, width))
+        splitView.setPosition(position, ofDividerAt: 0)
+        DispatchQueue.main.async { [weak splitView] in
+            splitView?.setPosition(position, ofDividerAt: 0)
+        }
     }
 
     /// Supplies locations resolved by the application layer, rather than
@@ -141,21 +185,30 @@ public final class ExplorerBrowserViewController: NSViewController {
         splitView.translatesAutoresizingMaskIntoConstraints = false
         splitView.isVertical = true
         splitView.dividerStyle = .thin
-        splitView.addArrangedSubview(makeSidebar())
-        splitView.addArrangedSubview(makeContentArea())
-        splitView.setPosition(230, ofDividerAt: 0)
+        let sidebar = makeSidebar()
+        let content = makeContentArea()
+        splitView.addArrangedSubview(sidebar)
+        splitView.addArrangedSubview(content)
+        let sidebarMinimum = sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
+        let sidebarMaximum = sidebar.widthAnchor.constraint(lessThanOrEqualToConstant: 380)
+        let contentMinimum = content.widthAnchor.constraint(greaterThanOrEqualToConstant: 520)
+        sidebarMaximum.priority = .defaultHigh
+        contentMinimum.priority = .defaultHigh
+        NSLayoutConstraint.activate([sidebarMinimum, sidebarMaximum, contentMinimum])
+        DispatchQueue.main.async { [weak splitView] in
+            splitView?.setPosition(230, ofDividerAt: 0)
+        }
         splitView.delegate = self
         self.splitView = splitView
         return splitView
     }
 
     private func makeSidebar() -> NSView {
-        let container = NSView()
+        let container = NSVisualEffectView()
         container.translatesAutoresizingMaskIntoConstraints = false
-
-        let title = NSTextField(labelWithString: "Locations")
-        title.font = .preferredFont(forTextStyle: .headline)
-        title.setAccessibilityLabel("Locations")
+        container.material = .sidebar
+        container.blendingMode = .withinWindow
+        container.state = .active
 
         sidebarController.onSelection = { [weak self] location in
             self?.onSidebarLocationSelection?(location)
@@ -174,19 +227,13 @@ public final class ExplorerBrowserViewController: NSViewController {
         scrollView.documentView = sidebarController.outlineView
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
-
-        let stack = NSStackView(views: [title, scrollView])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
-            scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -3),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4),
         ])
         return container
     }
@@ -198,21 +245,33 @@ public final class ExplorerBrowserViewController: NSViewController {
         breadcrumbBar.onNavigate = { [weak self] url in self?.onBreadcrumbSelection?(url) }
         breadcrumbBar.onSubmitPath = { [weak self] path in self?.onPathSubmission?(path) }
 
-        searchField.placeholderString = "Search this folder"
+        searchField.placeholderString = "Filter"
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(submitSearch(_:))
-        searchField.setAccessibilityLabel("Search current folder")
+        searchField.setAccessibilityLabel("Filter current folder")
         searchField.setAccessibilityHelp("Filters the current folder by name.")
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
+        searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+
+        viewModeControl.segmentCount = 2
+        viewModeControl.trackingMode = .selectOne
+        viewModeControl.setImage(NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "Details"), forSegment: 0)
+        viewModeControl.setImage(NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "Icons"), forSegment: 1)
+        viewModeControl.setToolTip("Details", forSegment: 0)
+        viewModeControl.setToolTip("Icons", forSegment: 1)
+        viewModeControl.selectedSegment = viewMode == .icons ? 1 : 0
+        viewModeControl.target = self
+        viewModeControl.action = #selector(changeViewMode(_:))
+        viewModeControl.setAccessibilityLabel("View mode")
 
         configureFileTable()
         let tableScrollView = NSScrollView()
         tableScrollView.documentView = fileTableView
         tableScrollView.hasVerticalScroller = true
+        tableScrollView.hasHorizontalScroller = true
         tableScrollView.autohidesScrollers = true
-        tableScrollView.borderType = .bezelBorder
+        tableScrollView.borderType = .noBorder
         tableScrollView.setAccessibilityLabel("Folder contents")
         listScrollView = tableScrollView
 
@@ -221,7 +280,7 @@ public final class ExplorerBrowserViewController: NSViewController {
         iconScrollView.documentView = collectionView
         iconScrollView.hasVerticalScroller = true
         iconScrollView.autohidesScrollers = true
-        iconScrollView.borderType = .bezelBorder
+        iconScrollView.borderType = .noBorder
         iconScrollView.setAccessibilityLabel("Folder contents as icons")
         self.iconScrollView = iconScrollView
 
@@ -261,32 +320,49 @@ public final class ExplorerBrowserViewController: NSViewController {
         let previewMaximum = previewView.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
         [contentMinimum, previewMinimum, previewMaximum].forEach { $0.priority = .defaultHigh; $0.isActive = true }
         contentSplitView = browserSplitView
+        DispatchQueue.main.async { [weak browserSplitView] in
+            guard let browserSplitView else { return }
+            browserSplitView.setPosition(max(320, browserSplitView.bounds.width - 320), ofDividerAt: 0)
+        }
 
-        let topRow = NSStackView(views: [breadcrumbBar, searchField])
+        let navigation = NSStackView(views: [
+            makeNavigationButton(symbol: "chevron.left", help: "Back", tag: 0),
+            makeNavigationButton(symbol: "chevron.right", help: "Forward", tag: 1),
+            makeNavigationButton(symbol: "arrow.up", help: "Up", tag: 2),
+        ])
+        navigation.orientation = .horizontal
+        navigation.alignment = .centerY
+        navigation.spacing = 1
+
+        let topRow = NSStackView(views: [navigation, breadcrumbBar, searchField, viewModeControl])
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
         topRow.distribution = .fill
-        topRow.spacing = 10
+        topRow.spacing = 8
+        topRow.edgeInsets = NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
         let statusRow = NSStackView(views: [statusLabel, statusSummaryLabel])
         statusRow.orientation = .horizontal
         statusRow.alignment = .centerY
         statusRow.distribution = .fill
         statusRow.spacing = 12
+        statusRow.edgeInsets = NSEdgeInsets(top: 3, left: 8, bottom: 3, right: 8)
         let stack = NSStackView(views: [topRow, browserSplitView, statusRow])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             topRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            topRow.heightAnchor.constraint(equalToConstant: 42),
             browserSplitView.widthAnchor.constraint(equalTo: stack.widthAnchor),
             browserSplitView.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
             statusRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            statusRow.heightAnchor.constraint(equalToConstant: 24),
             breadcrumbBar.widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
             statusLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
             statusSummaryLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
@@ -298,8 +374,8 @@ public final class ExplorerBrowserViewController: NSViewController {
     private func configureFileTable() {
         [
             ("name", "Name", 250.0),
-            ("modified", "Date Modified", 150.0),
             ("size", "Size", 90.0),
+            ("modified", "Date Modified", 150.0),
             ("kind", "Kind", 130.0),
         ].forEach { identifier, title, width in
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
@@ -309,8 +385,9 @@ public final class ExplorerBrowserViewController: NSViewController {
             fileTableView.addTableColumn(column)
         }
         fileTableView.usesAlternatingRowBackgroundColors = true
+        fileTableView.style = .plain
         fileTableView.allowsMultipleSelection = true
-        fileTableView.rowHeight = 25
+        fileTableView.rowHeight = 26
         fileTableView.delegate = self
         fileTableView.dataSource = self
         fileTableView.target = self
@@ -320,6 +397,34 @@ public final class ExplorerBrowserViewController: NSViewController {
         fileTableView.registerForDraggedTypes([.fileURL])
         fileTableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         fileTableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+    }
+
+    private func makeNavigationButton(symbol: String, help: String, tag: Int) -> NSButton {
+        let button = NSButton()
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: help)
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.tag = tag
+        button.target = self
+        button.action = #selector(performNavigation(_:))
+        button.toolTip = help
+        button.setAccessibilityLabel(help)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 24),
+            button.heightAnchor.constraint(equalToConstant: 24),
+        ])
+        return button
+    }
+
+    @objc private func performNavigation(_ sender: NSButton) {
+        let commands: [BrowserNavigationCommand] = [.back, .forward, .up]
+        guard commands.indices.contains(sender.tag) else { return }
+        onNavigationCommand?(commands[sender.tag])
+    }
+
+    @objc private func changeViewMode(_ sender: NSSegmentedControl) {
+        onViewModeSelection?(sender.selectedSegment == 1 ? .icons : .details)
     }
 
     private func configureCollectionView() {
@@ -384,7 +489,7 @@ public final class ExplorerBrowserViewController: NSViewController {
         }
         previewView.display(selectedRows)
 
-        var components = ["\(fileRows.count) \(fileRows.count == 1 ? "item" : "items")"]
+        var components: [String] = []
         if !selectedRows.isEmpty {
             components.append("\(selectedRows.count) selected")
             let selectedBytes = selectedRows.compactMap(\.sizeInBytes).reduce(0, +)
@@ -417,6 +522,10 @@ public final class ExplorerBrowserViewController: NSViewController {
     private func makeFileContextMenu() -> NSMenu {
         let menu = NSMenu(title: "File")
         menu.delegate = self
+        addContextItem("Open", command: .open, to: menu)
+        addContextItem("Open in New Tab", command: .openInNewTab, to: menu)
+        addContextItem("Show in Finder", command: .revealInFinder, to: menu)
+        menu.addItem(.separator())
         addContextItem("New Folder", command: .newFolder, to: menu)
         menu.addItem(.separator())
         addContextItem("Rename", command: .rename, to: menu)
@@ -481,6 +590,43 @@ extension ExplorerBrowserViewController: NSSearchFieldDelegate {
         guard notification.object as? NSSearchField === searchField else { return }
         notifySearchChange()
     }
+
+    public func controlTextDidEndEditing(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField,
+              !(field is NSSearchField),
+              let source = renamingURL else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldSubmit = !renameWasCancelled && !name.isEmpty && name != source.lastPathComponent
+        finishRenaming()
+        if shouldSubmit { onRenameSubmission?(source, name) }
+    }
+
+    public func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
+        guard control is NSTextField, control !== searchField, renamingURL != nil else { return false }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            renameWasCancelled = true
+            view.window?.makeFirstResponder(fileTableView)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            view.window?.makeFirstResponder(fileTableView)
+            return true
+        }
+        return false
+    }
+
+    private func finishRenaming() {
+        guard let source = renamingURL else { return }
+        renamingURL = nil
+        renameWasCancelled = false
+        guard let row = fileRows.firstIndex(where: { $0.browserRow.url == source }),
+              let column = fileTableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" }) else { return }
+        fileTableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: column))
+    }
 }
 
 extension ExplorerBrowserViewController: NSTableViewDataSource, NSTableViewDelegate {
@@ -502,6 +648,13 @@ extension ExplorerBrowserViewController: NSTableViewDataSource, NSTableViewDeleg
         if let column = tableColumn {
             label.stringValue = fileRows[row].value(for: column.identifier.rawValue)
             label.setAccessibilityLabel("\(column.title): \(label.stringValue)")
+            let isRenaming = isNameColumn && fileRows[row].browserRow.url == renamingURL
+            label.delegate = isNameColumn ? self : nil
+            label.isEditable = isRenaming
+            label.isSelectable = isRenaming
+            label.drawsBackground = isRenaming
+            label.backgroundColor = isRenaming ? .textBackgroundColor : .clear
+            label.isBezeled = isRenaming
             if isNameColumn, let icon = cell.imageView {
                 icon.image = NSWorkspace.shared.icon(forFile: fileRows[row].browserRow.url.path)
                 icon.imageScaling = .scaleProportionallyDown
@@ -636,16 +789,24 @@ extension ExplorerBrowserViewController: NSMenuDelegate {
     private func selectContextMenuTarget(for menu: NSMenu) {
         if menu === fileTableView.menu {
             let row = fileTableView.clickedRow
-            guard fileRows.indices.contains(row), !fileTableView.selectedRowIndexes.contains(row) else { return }
+            guard fileRows.indices.contains(row) else {
+                fileTableView.deselectAll(nil)
+                return
+            }
+            guard !fileTableView.selectedRowIndexes.contains(row) else { return }
             fileTableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             return
         }
 
-        guard menu === collectionView.menu,
-              let event = NSApp.currentEvent,
-              let indexPath = collectionView.indexPathForItem(
-                  at: collectionView.convert(event.locationInWindow, from: nil)
-              ),
+        guard menu === collectionView.menu, let event = NSApp.currentEvent else { return }
+        guard let indexPath = collectionView.indexPathForItem(
+            at: collectionView.convert(event.locationInWindow, from: nil)
+        ) else {
+            collectionView.selectionIndexes = []
+            reportSelection()
+            return
+        }
+        guard
               fileRows.indices.contains(indexPath.item),
               !collectionView.selectionIndexes.contains(indexPath.item) else { return }
         collectionView.selectionIndexes = IndexSet(integer: indexPath.item)

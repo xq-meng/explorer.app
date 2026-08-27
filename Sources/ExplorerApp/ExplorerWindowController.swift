@@ -4,7 +4,7 @@ import ExplorerOperations
 import ExplorerUI
 
 @MainActor
-final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSWindowDelegate {
+final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
 
     private let tabViewController = ExplorerTabsViewController()
@@ -24,12 +24,14 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
     private var isRestoringSession = false
 
     init() {
-        let defaultFrame = NSRect(x: 0, y: 0, width: 1080, height: 680)
+        let defaultFrame = NSRect(x: 0, y: 0, width: 1280, height: 760)
         let storedFrame = settings.windowFrame
-        let frame = (storedFrame?.width ?? 0) >= 720 && (storedFrame?.height ?? 0) >= 440 ? storedFrame! : defaultFrame
+        let frame = (storedFrame?.width ?? 0) >= 900 && (storedFrame?.height ?? 0) >= 560 ? storedFrame! : defaultFrame
         let window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Explorer"
-        window.minSize = NSSize(width: 720, height: 440)
+        window.minSize = NSSize(width: 900, height: 560)
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = .windowBackgroundColor
         window.contentViewController = tabViewController
         if storedFrame == nil { window.center() }
         super.init(window: window)
@@ -37,10 +39,11 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
         tabViewController.onSelectionChange = { [weak self] in
             self?.sessions.forEach { $0.closeQuickLook() }
             self?.updateWindowTitle()
-            self?.updateViewModeToolbarSelection()
             self?.persistSessionState()
         }
-        configureToolbar(for: window)
+        tabViewController.onNewTab = { [weak self] in self?.newTab() }
+        tabViewController.onCloseTab = { [weak self] in self?.closeCurrentTab() }
+        tabViewController.onTabsReordered = { [weak self] in self?.persistSessionState() }
         observeOperationEvents()
     }
 
@@ -69,13 +72,13 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
         item.label = "Loading…"
         session.onTitleChange = { [weak self, weak item, weak session] title in
             item?.label = title
+            self?.tabViewController.refreshTabs()
             guard self?.currentSession === session else { return }
             self?.window?.title = "Explorer — \(title)"
             self?.persistSessionState()
         }
         session.onViewModeChange = { [weak self] mode in
             self?.settings.viewMode = mode
-            self?.updateViewModeToolbarSelection()
         }
         session.onPreviewVisibilityChange = { [weak self] isVisible in
             self?.settings.showsPreview = isVisible
@@ -92,7 +95,6 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
         tabViewController.selectedTabViewItemIndex = tabViewController.tabViewItems.count - 1
         sessions.append(session)
         session.start(at: startingURL)
-        updateViewModeToolbarSelection()
         persistSessionState()
     }
 
@@ -103,7 +105,6 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
         sessions.removeAll { $0 === session }
         tabViewController.removeTabViewItem(item)
         updateWindowTitle()
-        updateViewModeToolbarSelection()
         persistSessionState()
     }
 
@@ -138,7 +139,7 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
         currentSession?.showStatus("Added \(url.lastPathComponent) to Favorites.")
     }
 
-    func windowDidBecomeKey(_ notification: Notification) { updateWindowTitle(); updateViewModeToolbarSelection() }
+    func windowDidBecomeKey(_ notification: Notification) { updateWindowTitle() }
     func windowDidEndLiveResize(_ notification: Notification) { persistWindowState() }
     func windowWillClose(_ notification: Notification) {
         persistWindowState()
@@ -148,32 +149,6 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
         historyTask?.cancel()
         persistSessionState()
         onClose?()
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.newTab, .back, .forward, .up, .refresh, .viewMode, .flexibleSpace, .space]
-    }
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.newTab, .back, .forward, .up, .flexibleSpace, .viewMode, .refresh]
-    }
-
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        let item = NSToolbarItem(itemIdentifier: id)
-        switch id {
-        case .newTab: configure(item, "New Tab", "Open New Tab", "plus", #selector(openNewTab(_:)))
-        case .back: configure(item, "Back", "Go Back", "chevron.left", #selector(goBack(_:)))
-        case .forward: configure(item, "Forward", "Go Forward", "chevron.right", #selector(goForward(_:)))
-        case .up: configure(item, "Up", "Go to Enclosing Folder", "arrow.up", #selector(goUp(_:)))
-        case .refresh: configure(item, "Refresh", "Refresh Folder", "arrow.clockwise", #selector(refresh(_:)))
-        case .viewMode:
-            let control = NSSegmentedControl(labels: ["Details", "Icons"], trackingMode: .selectOne, target: self, action: #selector(changeViewMode(_:)))
-            control.setAccessibilityLabel("View mode")
-            control.selectedSegment = currentSession?.viewMode == .icons ? 1 : 0
-            item.label = "View Mode"; item.paletteLabel = "View Mode"; item.toolTip = "Choose details or icon view"; item.view = control
-        default: return nil
-        }
-        return item
     }
 
     private var selectedTabItem: NSTabViewItem? {
@@ -244,7 +219,9 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
     private func persistSessionState() {
         guard !isRestoringSession else { return }
         settings.saveTabSession(
-            locations: sessions.compactMap(\.currentDirectoryURL),
+            locations: tabViewController.tabViewItems.compactMap {
+                ($0.viewController as? ExplorerTabController)?.currentDirectoryURL
+            },
             selectedIndex: tabViewController.selectedTabViewItemIndex
         )
     }
@@ -310,47 +287,6 @@ final class ExplorerWindowController: NSWindowController, NSToolbarDelegate, NSW
         }
     }
 
-    private func configureToolbar(for window: NSWindow) {
-        let toolbar = NSToolbar(identifier: "ExplorerToolbar")
-        toolbar.displayMode = .iconOnly; toolbar.allowsUserCustomization = true; toolbar.autosavesConfiguration = true; toolbar.delegate = self
-        window.toolbar = toolbar; window.toolbarStyle = .unified
-    }
-
-    private func configure(_ item: NSToolbarItem, _ label: String, _ toolTip: String, _ imageName: String, _ action: Selector) {
-        item.label = label; item.paletteLabel = label; item.toolTip = toolTip
-        item.image = NSImage(systemSymbolName: imageName, accessibilityDescription: label); item.target = self; item.action = action
-    }
-
     private func updateWindowTitle() { if let session = currentSession { window?.title = "Explorer — \(session.displayTitle)" } }
-    private func updateViewModeToolbarSelection() {
-        guard let toolbar = window?.toolbar, let item = toolbar.items.first(where: { $0.itemIdentifier == .viewMode }), let control = item.view as? NSSegmentedControl else { return }
-        control.selectedSegment = currentSession?.viewMode == .icons ? 1 : 0
-    }
     private func persistWindowState() { if let window { settings.windowFrame = window.frame } }
-
-    @objc private func openNewTab(_ sender: Any?) { newTab() }
-    @objc private func goBack(_ sender: Any?) { perform(.back) }
-    @objc private func goForward(_ sender: Any?) { perform(.forward) }
-    @objc private func goUp(_ sender: Any?) { perform(.up) }
-    @objc private func refresh(_ sender: Any?) { perform(.refresh) }
-    @objc private func changeViewMode(_ sender: NSSegmentedControl) { setViewMode(sender.selectedSegment == 1 ? .icons : .details) }
-}
-
-@MainActor
-private final class ExplorerTabsViewController: NSTabViewController {
-    var onSelectionChange: (() -> Void)?
-
-    override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
-        super.tabView(tabView, didSelect: tabViewItem)
-        onSelectionChange?()
-    }
-}
-
-private extension NSToolbarItem.Identifier {
-    static let newTab = Self("Explorer.newTab")
-    static let back = Self("Explorer.back")
-    static let forward = Self("Explorer.forward")
-    static let up = Self("Explorer.up")
-    static let refresh = Self("Explorer.refresh")
-    static let viewMode = Self("Explorer.viewMode")
 }
