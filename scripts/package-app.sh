@@ -25,6 +25,7 @@ fi
 /bin/mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 /bin/cp "$BINARY_DIRECTORY/ExplorerApp" "$APP_BUNDLE/Contents/MacOS/ExplorerApp"
 /bin/cp "$PROJECT_DIRECTORY/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+/bin/cp "$PROJECT_DIRECTORY/Resources/Explorer.icns" "$APP_BUNDLE/Contents/Resources/Explorer.icns"
 
 /usr/bin/plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 /usr/bin/codesign --force --sign - \

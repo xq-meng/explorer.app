@@ -18,6 +18,7 @@ The current implementation provides:
 - safe Undo/Redo plans routed back through the same operation queue and conflict checks;
 - custom Favorites plus tab-path and selected-tab restoration between launches;
 - sortable file columns, per-tab view/sort restoration, and a Settings window for hidden files and preview defaults;
+- an original multi-resolution macOS application icon;
 - Swift unit, integration, cancellation, conflict, and filesystem-safety tests.
 
 This is a development prototype, not the roadmap's Beta release. The directory
@@ -55,8 +56,8 @@ For a normal macOS application bundle, package an ad-hoc-signed development buil
 ```
 
 The bundle is written to `.build/artifacts/Explorer.app`. It is suitable for
-local development; Developer ID signing, notarization, an application icon,
-and a distributable DMG remain release work.
+local development; Developer ID signing, notarization, and a distributable DMG
+remain release work.
 
 ## Useful commands
 
