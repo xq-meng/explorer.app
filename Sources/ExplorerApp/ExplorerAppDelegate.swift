@@ -4,6 +4,8 @@ import ExplorerUI
 @MainActor
 final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
     private var windowControllers: [ExplorerWindowController] = []
+    private let settings = ExplorerSettingsStore()
+    private var preferencesWindowController: ExplorerPreferencesWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
@@ -54,6 +56,23 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
         currentWindowController?.togglePreview()
     }
 
+    @objc func toggleHiddenFiles(_ sender: Any?) {
+        applyShowsHiddenFiles(!settings.showsHiddenFiles)
+    }
+
+    @objc func showPreferences(_ sender: Any?) {
+        let controller: ExplorerPreferencesWindowController
+        if let preferencesWindowController {
+            controller = preferencesWindowController
+        } else {
+            controller = ExplorerPreferencesWindowController(settings: settings)
+            controller.onShowsHiddenFilesChange = { [weak self] value in self?.applyShowsHiddenFiles(value) }
+            controller.onShowsPreviewChange = { [weak self] value in self?.applyShowsPreview(value) }
+            preferencesWindowController = controller
+        }
+        controller.present()
+    }
+
     @objc func undo(_ sender: Any?) { currentWindowController?.undoLastOperation() }
     @objc func redo(_ sender: Any?) { currentWindowController?.redoLastOperation() }
     @objc func addCurrentFolderToFavorites(_ sender: Any?) { currentWindowController?.addCurrentFolderToFavorites() }
@@ -86,6 +105,9 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
         case #selector(togglePreview(_:)):
             menuItem.state = currentWindowController?.isPreviewVisible == true ? .on : .off
             return currentWindowController != nil
+        case #selector(toggleHiddenFiles(_:)):
+            menuItem.state = settings.showsHiddenFiles ? .on : .off
+            return true
         case #selector(addCurrentFolderToFavorites(_:)):
             return currentWindowController?.canAddCurrentFolderToFavorites ?? false
         default: return true
@@ -160,6 +182,7 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
         addMenuItem("as Details", action: #selector(showDetails(_:)), key: "1", modifiers: .command, to: viewMenu)
         addMenuItem("as Icons", action: #selector(showIcons(_:)), key: "2", modifiers: .command, to: viewMenu)
         viewMenu.addItem(.separator())
+        addMenuItem("Show Hidden Files", action: #selector(toggleHiddenFiles(_:)), key: ".", modifiers: [.command, .shift], to: viewMenu)
         addMenuItem("Show Preview Pane", action: #selector(togglePreview(_:)), key: "p", modifiers: [.command, .shift], to: viewMenu)
         addMenuItem("Quick Look", action: #selector(quickLook(_:)), key: " ", modifiers: [], to: viewMenu)
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
@@ -170,6 +193,9 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
 
     private func applicationMenuItem() -> NSMenuItem {
         let menu = NSMenu(title: "Explorer")
+        let settingsItem = menu.addItem(withTitle: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(.separator())
         let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
         menu.addItem(servicesItem)
         menu.addItem(.separator())
@@ -180,6 +206,16 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: "Explorer", action: nil, keyEquivalent: "")
         item.submenu = menu
         return item
+    }
+
+    private func applyShowsHiddenFiles(_ isVisible: Bool) {
+        settings.showsHiddenFiles = isVisible
+        windowControllers.forEach { $0.setShowsHiddenFiles(isVisible) }
+    }
+
+    private func applyShowsPreview(_ isVisible: Bool) {
+        settings.showsPreview = isVisible
+        windowControllers.forEach { $0.setPreviewVisible(isVisible) }
     }
 
     private func addMenuItem(

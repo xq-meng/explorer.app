@@ -4,6 +4,7 @@ import AppKit
 /// for a visible/reused item; directory snapshots never eagerly load icons.
 final class BrowserIconCollectionItem: NSCollectionViewItem {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("ExplorerBrowserIconItem")
+    private(set) var representedURL: URL?
 
     private let iconView = NSImageView()
     private let nameLabel = NSTextField(wrappingLabelWithString: "")
@@ -31,10 +32,11 @@ final class BrowserIconCollectionItem: NSCollectionViewItem {
         ])
     }
 
-    func display(_ row: BrowserFileRow) {
+    func display(_ row: BrowserFileRow, thumbnail: NSImage? = nil) {
+        representedURL = row.url
         nameLabel.stringValue = row.name
         nameLabel.setAccessibilityLabel("\(row.kind): \(row.name)")
-        iconView.image = NSWorkspace.shared.icon(forFile: row.url.path)
+        iconView.image = thumbnail ?? NSWorkspace.shared.icon(forFile: row.url.path)
         iconView.setAccessibilityLabel(row.kind)
         view.setAccessibilityLabel("\(row.kind): \(row.name)")
     }
@@ -43,5 +45,6 @@ final class BrowserIconCollectionItem: NSCollectionViewItem {
         super.prepareForReuse()
         iconView.image = nil
         nameLabel.stringValue = ""
+        representedURL = nil
     }
 }

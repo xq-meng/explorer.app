@@ -57,13 +57,17 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     func perform(_ command: BrowserNavigationCommand) { currentSession?.perform(command) }
 
-    func newTab(at url: URL? = nil) {
-        let startingURL = url ?? currentSession?.currentDirectoryURL ?? homeURL
+    func newTab(at url: URL? = nil, restoring state: ExplorerSettingsStore.TabState? = nil) {
+        let startingURL = state?.url ?? url ?? currentSession?.currentDirectoryURL ?? homeURL
+        let initialViewMode = state?.viewMode ?? currentSession?.viewMode ?? restoredViewMode
+        let initialSortDescriptor = state?.sortDescriptor ?? currentSession?.sortDescriptor ?? .nameAscending
         let session = ExplorerTabController(
             homeURL: homeURL,
             sidebarLocations: allSidebarLocations,
-            initialViewMode: restoredViewMode,
+            initialViewMode: initialViewMode,
+            initialSortDescriptor: initialSortDescriptor,
             initialShowsPreview: restoredPreviewVisibility,
+            initialShowsHiddenFiles: settings.showsHiddenFiles,
             sidebarWidth: settings.sidebarWidth,
             operationQueue: operationQueue,
             clipboard: clipboard
@@ -79,7 +83,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         }
         session.onViewModeChange = { [weak self] mode in
             self?.settings.viewMode = mode
+            self?.persistSessionState()
         }
+        session.onSortChange = { [weak self] _ in self?.persistSessionState() }
         session.onPreviewVisibilityChange = { [weak self] isVisible in
             self?.settings.showsPreview = isVisible
         }
@@ -110,6 +116,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     func setViewMode(_ mode: BrowserViewMode) { currentSession?.setViewMode(mode) }
     func togglePreview() { currentSession?.togglePreview() }
+    func setShowsHiddenFiles(_ isVisible: Bool) {
+        settings.showsHiddenFiles = isVisible
+        sessions.forEach { $0.setShowsHiddenFiles(isVisible) }
+    }
+    func setPreviewVisible(_ isVisible: Bool) {
+        settings.showsPreview = isVisible
+        sessions.forEach { $0.setPreviewVisible(isVisible) }
+    }
     var isPreviewVisible: Bool { currentSession?.showsPreview ?? restoredPreviewVisibility }
     var canUndo: Bool { historyTask == nil && operationHistory.canUndo }
     var canRedo: Bool { historyTask == nil && operationHistory.canRedo }
@@ -168,6 +182,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
                 locations.append(BrowserSidebarLocation(title: name, url: url, kind: .favorite))
             }
         }
+        if let applicationsURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first,
+           (try? applicationsURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            locations.append(BrowserSidebarLocation(title: "Applications", url: applicationsURL, kind: .favorite))
+        }
         return locations
     }
 
@@ -206,10 +224,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         didRestoreSession = true
         isRestoringSession = true
         let restored = settings.restoredTabSession()
-        if restored.locations.isEmpty {
+        if restored.tabs.isEmpty {
             newTab(at: homeURL)
         } else {
-            restored.locations.forEach { newTab(at: $0) }
+            restored.tabs.forEach { newTab(restoring: $0) }
             tabViewController.selectedTabViewItemIndex = min(max(0, restored.selectedIndex), sessions.count - 1)
         }
         isRestoringSession = false
@@ -219,8 +237,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private func persistSessionState() {
         guard !isRestoringSession else { return }
         settings.saveTabSession(
-            locations: tabViewController.tabViewItems.compactMap {
-                ($0.viewController as? ExplorerTabController)?.currentDirectoryURL
+            tabs: tabViewController.tabViewItems.compactMap {
+                guard let session = $0.viewController as? ExplorerTabController,
+                      let url = session.currentDirectoryURL else { return nil }
+                return ExplorerSettingsStore.TabState(
+                    url: url,
+                    viewMode: session.viewMode,
+                    sortDescriptor: session.sortDescriptor
+                )
             },
             selectedIndex: tabViewController.selectedTabViewItemIndex
         )

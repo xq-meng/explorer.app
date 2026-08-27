@@ -3,8 +3,24 @@ import ExplorerUI
 
 @MainActor
 final class ExplorerSettingsStore {
+    struct TabState: Codable, Equatable {
+        let url: URL
+        let viewMode: BrowserViewMode
+        let sortDescriptor: BrowserSortDescriptor
+
+        init(
+            url: URL,
+            viewMode: BrowserViewMode = .details,
+            sortDescriptor: BrowserSortDescriptor = .nameAscending
+        ) {
+            self.url = url.standardizedFileURL
+            self.viewMode = viewMode
+            self.sortDescriptor = sortDescriptor
+        }
+    }
+
     struct TabSession {
-        let locations: [URL]
+        let tabs: [TabState]
         let selectedIndex: Int
     }
 
@@ -13,7 +29,9 @@ final class ExplorerSettingsStore {
         static let sidebarWidth = "Explorer.window.sidebarWidth"
         static let viewMode = "Explorer.browser.viewMode"
         static let showsPreview = "Explorer.browser.showsPreview"
+        static let showsHiddenFiles = "Explorer.browser.showsHiddenFiles"
         static let tabPaths = "Explorer.session.tabPaths"
+        static let tabStates = "Explorer.session.tabStates"
         static let selectedTabIndex = "Explorer.session.selectedTabIndex"
         static let favorites = "Explorer.sidebar.favorites"
     }
@@ -44,6 +62,11 @@ final class ExplorerSettingsStore {
         set { defaults.set(newValue, forKey: Key.showsPreview) }
     }
 
+    var showsHiddenFiles: Bool {
+        get { defaults.object(forKey: Key.showsHiddenFiles) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: Key.showsHiddenFiles) }
+    }
+
     var favoriteURLs: [URL] {
         (defaults.stringArray(forKey: Key.favorites) ?? []).map {
             URL(fileURLWithPath: $0).standardizedFileURL
@@ -62,18 +85,29 @@ final class ExplorerSettingsStore {
     }
 
     func restoredTabSession(limit: Int = 12) -> TabSession {
+        if let data = defaults.data(forKey: Key.tabStates),
+           let decoded = try? JSONDecoder().decode([TabState].self, from: data) {
+            return TabSession(
+                tabs: Array(decoded.prefix(limit)),
+                selectedIndex: defaults.integer(forKey: Key.selectedTabIndex)
+            )
+        }
+
         let paths = defaults.stringArray(forKey: Key.tabPaths) ?? []
         var seen = Set<URL>()
-        let locations = paths.prefix(limit).compactMap { path -> URL? in
+        let tabs = paths.prefix(limit).compactMap { path -> TabState? in
             let url = URL(fileURLWithPath: path).standardizedFileURL
-            return seen.insert(url).inserted ? url : nil
+            return seen.insert(url).inserted ? TabState(url: url, viewMode: viewMode) : nil
         }
-        return TabSession(locations: locations, selectedIndex: defaults.integer(forKey: Key.selectedTabIndex))
+        return TabSession(tabs: tabs, selectedIndex: defaults.integer(forKey: Key.selectedTabIndex))
     }
 
-    func saveTabSession(locations: [URL], selectedIndex: Int) {
-        guard !locations.isEmpty else { return }
-        defaults.set(locations.map(\.path), forKey: Key.tabPaths)
+    func saveTabSession(tabs: [TabState], selectedIndex: Int) {
+        guard !tabs.isEmpty else { return }
+        if let data = try? JSONEncoder().encode(tabs) {
+            defaults.set(data, forKey: Key.tabStates)
+        }
+        defaults.set(tabs.map(\.url.path), forKey: Key.tabPaths)
         defaults.set(max(0, selectedIndex), forKey: Key.selectedTabIndex)
     }
 

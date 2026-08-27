@@ -9,11 +9,14 @@ import AppKit
 public final class ExplorerBrowserViewController: NSViewController {
     public var onNavigationCommand: ((BrowserNavigationCommand) -> Void)?
     public var onViewModeSelection: ((BrowserViewMode) -> Void)?
+    public var onSortSelection: ((BrowserSortDescriptor) -> Void)?
     public var onPathSubmission: ((String) -> Void)?
     public var onBreadcrumbSelection: ((URL) -> Void)?
     public var onSidebarLocationSelection: ((BrowserSidebarLocation) -> Void)?
     public var onSidebarExpansionRequest: ((URL) -> Void)?
     public var onOpenSidebarLocationInNewTab: ((URL) -> Void)?
+    public var onCreateFolderInSidebarLocation: ((URL) -> Void)?
+    public var onMoveSidebarLocationToTrash: ((URL) -> Void)?
     public var onRemoveSidebarFavorite: ((URL) -> Void)?
     public var onOpenFileRow: ((BrowserFileRow) -> Void)?
     public var onRenameSubmission: ((URL, String) -> Void)?
@@ -21,6 +24,8 @@ public final class ExplorerBrowserViewController: NSViewController {
     public var onSidebarWidthChange: ((CGFloat) -> Void)?
     public var onSearchQueryChange: ((String) -> Void)?
     public var onSearchClear: (() -> Void)?
+    public var onThumbnailRequest: ((URL) -> Void)?
+    public var onThumbnailCancellation: ((URL) -> Void)?
     public var onFileCommand: ((BrowserFileCommand) -> Void)?
     public var canPerformFileCommand: ((BrowserFileCommand) -> Bool)?
     public var onFileURLDrop: ((BrowserFileDrop) -> Bool)?
@@ -42,11 +47,14 @@ public final class ExplorerBrowserViewController: NSViewController {
     private weak var iconScrollView: NSScrollView?
     private var renamingURL: URL?
     private var renameWasCancelled = false
+    private var isApplyingSortDescriptor = false
+    private let thumbnailCache = NSCache<NSURL, NSImage>()
 
     public private(set) var viewMode: BrowserViewMode = .details
     public private(set) var isPreviewVisible = true
 
     public override func loadView() {
+        thumbnailCache.countLimit = 256
         view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -142,6 +150,28 @@ public final class ExplorerBrowserViewController: NSViewController {
         fileTableView.selectRowIndexes(selectedIndexes, byExtendingSelection: false)
         collectionView.selectionIndexes = selectedIndexes
         updateViewMode()
+        if mode == .icons {
+            DispatchQueue.main.async { [weak self] in self?.requestVisibleThumbnails() }
+        }
+    }
+
+    public func setSortDescriptor(_ descriptor: BrowserSortDescriptor) {
+        isApplyingSortDescriptor = true
+        fileTableView.sortDescriptors = [NSSortDescriptor(
+            key: descriptor.field.rawValue,
+            ascending: descriptor.ascending
+        )]
+        isApplyingSortDescriptor = false
+    }
+
+    public func displayThumbnail(_ data: Data, for url: URL) {
+        let target = url.standardizedFileURL
+        guard let image = NSImage(data: data),
+              let index = fileRows.firstIndex(where: { $0.browserRow.url == target }) else { return }
+        thumbnailCache.setObject(image, forKey: target as NSURL)
+        let indexPath = IndexPath(item: index, section: 0)
+        guard let item = collectionView.item(at: indexPath) as? BrowserIconCollectionItem else { return }
+        item.display(fileRows[index].browserRow, thumbnail: image)
     }
 
     public func setPreviewVisible(_ isVisible: Bool) {
@@ -218,6 +248,12 @@ public final class ExplorerBrowserViewController: NSViewController {
         }
         sidebarController.onOpenInNewTab = { [weak self] url in
             self?.onOpenSidebarLocationInNewTab?(url)
+        }
+        sidebarController.onCreateFolder = { [weak self] url in
+            self?.onCreateFolderInSidebarLocation?(url)
+        }
+        sidebarController.onMoveToTrash = { [weak self] url in
+            self?.onMoveSidebarLocationToTrash?(url)
         }
         sidebarController.onRemoveFavorite = { [weak self] url in
             self?.onRemoveSidebarFavorite?(url)
@@ -382,6 +418,7 @@ public final class ExplorerBrowserViewController: NSViewController {
             column.title = title
             column.width = width
             column.minWidth = 70
+            column.sortDescriptorPrototype = NSSortDescriptor(key: identifier, ascending: true)
             fileTableView.addTableColumn(column)
         }
         fileTableView.usesAlternatingRowBackgroundColors = true
@@ -460,6 +497,18 @@ public final class ExplorerBrowserViewController: NSViewController {
         let showsIcons = viewMode == .icons
         listScrollView?.isHidden = showsIcons
         iconScrollView?.isHidden = !showsIcons
+    }
+
+    private func requestVisibleThumbnails() {
+        guard viewMode == .icons else { return }
+        collectionView.indexPathsForVisibleItems().forEach(requestThumbnailIfNeeded(at:))
+    }
+
+    private func requestThumbnailIfNeeded(at indexPath: IndexPath) {
+        guard fileRows.indices.contains(indexPath.item) else { return }
+        let row = fileRows[indexPath.item].browserRow
+        guard !row.isNavigable, thumbnailCache.object(forKey: row.url as NSURL) == nil else { return }
+        onThumbnailRequest?(row.url)
     }
 
     private func selectRows(with urls: Set<URL>) {
@@ -704,6 +753,14 @@ extension ExplorerBrowserViewController: NSTableViewDataSource, NSTableViewDeleg
         reportSelection()
     }
 
+    public func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+        guard tableView === fileTableView, !isApplyingSortDescriptor,
+              let descriptor = tableView.sortDescriptors.first,
+              let key = descriptor.key,
+              let field = BrowserSortField(rawValue: key) else { return }
+        onSortSelection?(BrowserSortDescriptor(field: field, ascending: descriptor.ascending))
+    }
+
     public func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard tableView === fileTableView, fileRows.indices.contains(row) else { return nil }
         return fileRows[row].browserRow.url as NSURL
@@ -746,8 +803,27 @@ extension ExplorerBrowserViewController: NSCollectionViewDataSource, NSCollectio
     ) -> NSCollectionViewItem {
         let item = collectionView.makeItem(withIdentifier: BrowserIconCollectionItem.reuseIdentifier, for: indexPath)
         guard let iconItem = item as? BrowserIconCollectionItem else { return item }
-        iconItem.display(fileRows[indexPath.item].browserRow)
+        let row = fileRows[indexPath.item].browserRow
+        iconItem.display(row, thumbnail: thumbnailCache.object(forKey: row.url as NSURL))
         return iconItem
+    }
+
+    public func collectionView(
+        _ collectionView: NSCollectionView,
+        willDisplay item: NSCollectionViewItem,
+        forRepresentedObjectAt indexPath: IndexPath
+    ) {
+        guard viewMode == .icons else { return }
+        requestThumbnailIfNeeded(at: indexPath)
+    }
+
+    public func collectionView(
+        _ collectionView: NSCollectionView,
+        didEndDisplaying item: NSCollectionViewItem,
+        forRepresentedObjectAt indexPath: IndexPath
+    ) {
+        guard let url = (item as? BrowserIconCollectionItem)?.representedURL else { return }
+        onThumbnailCancellation?(url)
     }
 
     public func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {

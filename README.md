@@ -10,12 +10,14 @@ The current implementation provides:
 
 - an AppKit application shell with independent tabs and navigation history;
 - asynchronous local directory browsing, mounted volumes, details and icon views;
+- visible-item Quick Look thumbnails with cancellation and a bounded memory cache;
 - a lazy folder tree that follows navigation, clickable/editable breadcrumbs, and `Command-L` address entry;
 - current-folder search, directory change monitoring, an embedded/toggleable Quick Look pane, and file URL drag/drop;
 - an Explorer-style status bar with item, selection, and selected-size summaries;
 - a queued, testable file-operation engine for create, rename, copy, move, duplicate, paste, and Trash;
 - safe Undo/Redo plans routed back through the same operation queue and conflict checks;
 - custom Favorites plus tab-path and selected-tab restoration between launches;
+- sortable file columns, per-tab view/sort restoration, and a Settings window for hidden files and preview defaults;
 - Swift unit, integration, cancellation, conflict, and filesystem-safety tests.
 
 This is a development prototype, not the roadmap's Beta release. The directory
@@ -60,6 +62,7 @@ and a distributable DMG remain release work.
 
 - `Command-L`: edit the current path
 - `Command-Shift-P`: toggle the preview pane
+- `Command-Shift-.`: show or hide hidden files
 - `Command-Control-D`: add the current folder to Favorites
 - `Command-Z` / `Command-Shift-Z`: undo or redo a completed file operation
 - `Space`: open the selected item in the Quick Look panel

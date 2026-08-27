@@ -43,6 +43,23 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertEqual(controller.outlineView(controller.outlineView, numberOfChildrenOfItem: root), 1)
         XCTAssertGreaterThanOrEqual(controller.outlineView.numberOfRows, 2)
     }
+
+    func testTableSortDescriptorRoutesAStableBrowserSortIntent() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        guard let table = allDescendants(of: controller.view, as: NSTableView.self)
+            .first(where: { !($0 is NSOutlineView) }) else {
+            return XCTFail("Expected the folder contents table")
+        }
+
+        var received: BrowserSortDescriptor?
+        controller.onSortSelection = { received = $0 }
+        let previous = table.sortDescriptors
+        table.sortDescriptors = [NSSortDescriptor(key: "size", ascending: false)]
+        controller.tableView(table, sortDescriptorsDidChange: previous)
+
+        XCTAssertEqual(received, BrowserSortDescriptor(field: .size, ascending: false))
+    }
 }
 
 @MainActor

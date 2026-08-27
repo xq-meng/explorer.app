@@ -34,6 +34,25 @@ public enum BrowserSidebarLocationKind: String, Sendable, Equatable {
     case folder
 }
 
+public enum BrowserSortField: String, Sendable, Codable, CaseIterable {
+    case name
+    case size
+    case modified
+    case kind
+}
+
+public struct BrowserSortDescriptor: Sendable, Codable, Equatable {
+    public var field: BrowserSortField
+    public var ascending: Bool
+
+    public init(field: BrowserSortField = .name, ascending: Bool = true) {
+        self.field = field
+        self.ascending = ascending
+    }
+
+    public static let nameAscending = BrowserSortDescriptor()
+}
+
 public struct BrowserSidebarLocation: Sendable, Equatable {
     public let title: String
     public let url: URL

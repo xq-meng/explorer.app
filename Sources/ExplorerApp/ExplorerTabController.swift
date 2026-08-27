@@ -9,6 +9,7 @@ import ExplorerUI
 final class ExplorerTabController: NSViewController {
     var onTitleChange: ((String) -> Void)?
     var onViewModeChange: ((BrowserViewMode) -> Void)?
+    var onSortChange: ((BrowserSortDescriptor) -> Void)?
     var onPreviewVisibilityChange: ((Bool) -> Void)?
     var onSidebarWidthChange: ((CGFloat) -> Void)?
     var onSelectionChange: ((Set<URL>) -> Void)?
@@ -21,13 +22,16 @@ final class ExplorerTabController: NSViewController {
     private let directoryLoader = DirectoryLoader()
     private let sidebarLoader = DirectoryLoader()
     private let searchService = SearchService()
+    private let thumbnailService = ThumbnailService()
     private let operationQueue: FileOperationQueue
     private let clipboard: FileClipboardService
     private let initialSidebarWidth: CGFloat?
     private var sidebarLocations: [BrowserSidebarLocation]
     private(set) var currentDirectoryURL: URL?
     private(set) var viewMode: BrowserViewMode
+    private(set) var sortDescriptor: BrowserSortDescriptor
     private(set) var showsPreview: Bool
+    private(set) var showsHiddenFiles: Bool
     private var navigationHistory = NavigationHistory()
     private var selection: Set<URL> = []
     private var loadTask: Task<Void, Never>?
@@ -44,19 +48,25 @@ final class ExplorerTabController: NSViewController {
     private var sidebarLoadTasks: [URL: Task<Void, Never>] = [:]
     private var sidebarRevealTask: Task<Void, Never>?
     private var pendingInlineRenameURL: URL?
+    private var thumbnailTasks: [URL: Task<Void, Never>] = [:]
+    private var thumbnailRequestIDs: [URL: UUID] = [:]
 
     init(
         homeURL: URL,
         sidebarLocations: [BrowserSidebarLocation],
         initialViewMode: BrowserViewMode,
+        initialSortDescriptor: BrowserSortDescriptor,
         initialShowsPreview: Bool,
+        initialShowsHiddenFiles: Bool,
         sidebarWidth: CGFloat?,
         operationQueue: FileOperationQueue,
         clipboard: FileClipboardService
     ) {
         self.homeURL = homeURL
         viewMode = initialViewMode
+        sortDescriptor = initialSortDescriptor
         showsPreview = initialShowsPreview
+        showsHiddenFiles = initialShowsHiddenFiles
         initialSidebarWidth = sidebarWidth
         self.operationQueue = operationQueue
         self.clipboard = clipboard
@@ -64,6 +74,7 @@ final class ExplorerTabController: NSViewController {
         super.init(nibName: nil, bundle: nil)
         browser.displaySidebarLocations(sidebarLocations)
         browser.setViewMode(initialViewMode)
+        browser.setSortDescriptor(initialSortDescriptor)
         browser.setPreviewVisible(initialShowsPreview)
         configureCallbacks()
     }
@@ -85,6 +96,7 @@ final class ExplorerTabController: NSViewController {
             browserView.topAnchor.constraint(equalTo: container.topAnchor),
             browserView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+        browser.setSortDescriptor(sortDescriptor)
         if let initialSidebarWidth { browser.setSidebarWidth(initialSidebarWidth) }
     }
 
@@ -94,6 +106,7 @@ final class ExplorerTabController: NSViewController {
         monitorTask?.cancel()
         sidebarLoadTasks.values.forEach { $0.cancel() }
         sidebarRevealTask?.cancel()
+        thumbnailTasks.values.forEach { $0.cancel() }
     }
 
     var displayTitle: String {
@@ -124,13 +137,33 @@ final class ExplorerTabController: NSViewController {
     func setViewMode(_ mode: BrowserViewMode) {
         viewMode = mode
         browser.setViewMode(mode)
+        if mode == .details { cancelThumbnailRequests() }
         onViewModeChange?(mode)
     }
 
+    func setSortDescriptor(_ descriptor: BrowserSortDescriptor) {
+        guard sortDescriptor != descriptor else { return }
+        sortDescriptor = descriptor
+        browser.setSortDescriptor(descriptor)
+        onSortChange?(descriptor)
+        perform(.refresh)
+    }
+
+    func setShowsHiddenFiles(_ showsHiddenFiles: Bool) {
+        guard self.showsHiddenFiles != showsHiddenFiles else { return }
+        self.showsHiddenFiles = showsHiddenFiles
+        perform(.refresh)
+    }
+
+    func setPreviewVisible(_ isVisible: Bool) {
+        guard showsPreview != isVisible else { return }
+        showsPreview = isVisible
+        browser.setPreviewVisible(isVisible)
+        onPreviewVisibilityChange?(isVisible)
+    }
+
     func togglePreview() {
-        showsPreview.toggle()
-        browser.setPreviewVisible(showsPreview)
-        onPreviewVisibilityChange?(showsPreview)
+        setPreviewVisible(!showsPreview)
     }
 
     func updateSidebarLocations(_ locations: [BrowserSidebarLocation]) {
@@ -166,11 +199,7 @@ final class ExplorerTabController: NSViewController {
             NSWorkspace.shared.activateFileViewerSelecting(Array(selection))
         case .newFolder:
             guard let currentDirectoryURL else { return }
-            submit(.createFolder(at: currentDirectoryURL, name: "New Folder", conflictPolicy: .keepBoth)) { [weak self] result in
-                guard let destination = result.items.first(where: { $0.status == .completed })?.destination else { return }
-                self?.selection = [destination]
-                self?.pendingInlineRenameURL = destination
-            }
+            createNewFolder(in: currentDirectoryURL)
         case .rename:
             guard let source = selection.first else { return }
             if viewMode != .details { setViewMode(.details) }
@@ -238,6 +267,7 @@ final class ExplorerTabController: NSViewController {
     private func configureCallbacks() {
         browser.onNavigationCommand = { [weak self] command in self?.perform(command) }
         browser.onViewModeSelection = { [weak self] mode in self?.setViewMode(mode) }
+        browser.onSortSelection = { [weak self] descriptor in self?.setSortDescriptor(descriptor) }
         browser.onPathSubmission = { [weak self] path in
             guard let self else { return }
             self.requestDirectory(self.url(forSubmittedPath: path), origin: .newLocation)
@@ -248,6 +278,12 @@ final class ExplorerTabController: NSViewController {
         browser.onSidebarLocationSelection = { [weak self] location in self?.requestDirectory(location.url, origin: .newLocation) }
         browser.onSidebarExpansionRequest = { [weak self] url in self?.loadSidebarChildren(of: url) }
         browser.onOpenSidebarLocationInNewTab = { [weak self] url in self?.onOpenLocationInNewTab?(url) }
+        browser.onCreateFolderInSidebarLocation = { [weak self] url in self?.createNewFolder(in: url) }
+        browser.onMoveSidebarLocationToTrash = { [weak self] url in
+            self?.submit(.trash(sources: [url])) { [weak self] _ in
+                self?.loadSidebarChildren(of: url.deletingLastPathComponent())
+            }
+        }
         browser.onRemoveSidebarFavorite = { [weak self] url in self?.onRemoveFavorite?(url) }
         browser.onOpenFileRow = { [weak self] row in self?.open(row) }
         browser.onRenameSubmission = { [weak self] source, name in
@@ -264,6 +300,8 @@ final class ExplorerTabController: NSViewController {
         browser.onSidebarWidthChange = { [weak self] width in self?.onSidebarWidthChange?(width) }
         browser.onSearchQueryChange = { [weak self] query in self?.filterCurrentDirectory(matching: query) }
         browser.onSearchClear = { [weak self] in self?.restoreUnfilteredSnapshot() }
+        browser.onThumbnailRequest = { [weak self] url in self?.requestThumbnail(for: url) }
+        browser.onThumbnailCancellation = { [weak self] url in self?.cancelThumbnail(for: url) }
         browser.onFileCommand = { [weak self] command in self?.performFileCommand(command) }
         browser.canPerformFileCommand = { [weak self] command in self?.canPerformFileCommand(command) ?? false }
         browser.onFileURLDrop = { [weak self] drop in self?.accept(drop) ?? false }
@@ -274,10 +312,11 @@ final class ExplorerTabController: NSViewController {
         let parent = parentURL.standardizedFileURL
         sidebarLoadTasks[parent]?.cancel()
         let loader = sidebarLoader
+        let options = sidebarLoadOptions
         sidebarLoadTasks[parent] = Task { [weak self] in
             defer { self?.sidebarLoadTasks[parent] = nil }
             do {
-                let snapshot = try await loader.load(parent)
+                let snapshot = try await loader.load(parent, options: options)
                 guard !Task.isCancelled, let self else { return }
                 let folders = Self.sidebarFolders(from: snapshot)
                 self.browser.displaySidebarChildren(folders, for: parent)
@@ -298,6 +337,7 @@ final class ExplorerTabController: NSViewController {
             .filter({ Self.contains(destination, in: $0.url) })
             .max(by: { $0.url.path.count < $1.url.path.count }) else { return }
         let loader = sidebarLoader
+        let options = sidebarLoadOptions
         sidebarRevealTask = Task { [weak self] in
             var parent = root.url.standardizedFileURL
             if parent == destination {
@@ -310,7 +350,7 @@ final class ExplorerTabController: NSViewController {
             guard destinationComponents.starts(with: rootComponents) else { return }
             for component in destinationComponents.dropFirst(rootComponents.count) {
                 do {
-                    let snapshot = try await loader.load(parent)
+                    let snapshot = try await loader.load(parent, options: options)
                     guard !Task.isCancelled, let self else { return }
                     self.browser.displaySidebarChildren(Self.sidebarFolders(from: snapshot), for: parent)
                     parent.appendPathComponent(component, isDirectory: true)
@@ -342,6 +382,7 @@ final class ExplorerTabController: NSViewController {
 
     private func requestDirectory(_ url: URL, origin: NavigationOrigin) {
         let destination = url.standardizedFileURL
+        cancelThumbnailRequests()
         loadGeneration &+= 1
         let generation = loadGeneration
         loadTask?.cancel()
@@ -350,9 +391,10 @@ final class ExplorerTabController: NSViewController {
         browser.clearSearchField()
         browser.showStatus("Loading \(destination.path)…")
         let loader = directoryLoader
+        let options = directoryLoadOptions
         loadTask = Task { [weak self] in
             do {
-                let snapshot = try await loader.load(destination)
+                let snapshot = try await loader.load(destination, options: options)
                 guard !Task.isCancelled, let self, generation == self.loadGeneration else { return }
                 self.apply(snapshot, destination: destination, origin: origin)
             } catch is CancellationError {
@@ -421,6 +463,18 @@ final class ExplorerTabController: NSViewController {
         }
     }
 
+    private func createNewFolder(in parentURL: URL) {
+        let parent = parentURL.standardizedFileURL
+        submit(.createFolder(at: parent, name: "New Folder", conflictPolicy: .keepBoth)) { [weak self] result in
+            guard let self,
+                  let destination = result.items.first(where: { $0.status == .completed })?.destination else { return }
+            self.loadSidebarChildren(of: parent)
+            guard self.currentDirectoryURL == parent else { return }
+            self.selection = [destination]
+            self.pendingInlineRenameURL = destination
+        }
+    }
+
     private func url(forSubmittedPath path: String) -> URL {
         if let url = URL(string: path), url.isFileURL { return url.standardizedFileURL }
         let expandedPath = (path as NSString).expandingTildeInPath
@@ -469,6 +523,59 @@ final class ExplorerTabController: NSViewController {
         searchGeneration &+= 1
         searchTask?.cancel()
         searchTask = nil
+    }
+
+    private func requestThumbnail(for url: URL) {
+        let target = url.standardizedFileURL
+        guard thumbnailTasks[target] == nil else { return }
+        let service = thumbnailService
+        let requestID = UUID()
+        thumbnailRequestIDs[target] = requestID
+        thumbnailTasks[target] = Task { [weak self] in
+            defer {
+                if self?.thumbnailRequestIDs[target] == requestID {
+                    self?.thumbnailTasks[target] = nil
+                    self?.thumbnailRequestIDs[target] = nil
+                }
+            }
+            do {
+                let thumbnail = try await service.thumbnail(for: ThumbnailRequest(
+                    url: target,
+                    maximumPixelSize: 160,
+                    scale: Double(NSScreen.main?.backingScaleFactor ?? 2)
+                ))
+                guard !Task.isCancelled, let self else { return }
+                self.browser.displayThumbnail(thumbnail.data, for: target)
+            } catch is CancellationError {
+            } catch ThumbnailServiceError.cancelled {
+            } catch {
+                // The collection item keeps its system icon when Quick Look
+                // cannot produce a representation for this file.
+            }
+        }
+    }
+
+    private func cancelThumbnail(for url: URL) {
+        let target = url.standardizedFileURL
+        thumbnailRequestIDs[target] = nil
+        thumbnailTasks.removeValue(forKey: target)?.cancel()
+    }
+
+    private func cancelThumbnailRequests() {
+        thumbnailTasks.values.forEach { $0.cancel() }
+        thumbnailTasks.removeAll()
+        thumbnailRequestIDs.removeAll()
+    }
+
+    private var directoryLoadOptions: DirectoryLoadOptions {
+        DirectoryLoadOptions(
+            showsHiddenFiles: showsHiddenFiles,
+            sortDescriptor: sortDescriptor.fileSortDescriptor
+        )
+    }
+
+    private var sidebarLoadOptions: DirectoryLoadOptions {
+        DirectoryLoadOptions(showsHiddenFiles: showsHiddenFiles)
     }
 
     private func startMonitoring(_ directoryURL: URL) {
@@ -633,5 +740,21 @@ extension ExplorerTabController: QLPreviewPanelDataSource, QLPreviewPanelDelegat
     nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
         // The shared panel may transfer to another tab through the responder
         // chain; no filesystem state is retained by the preview controller.
+    }
+}
+
+private extension BrowserSortDescriptor {
+    var fileSortDescriptor: FileSortDescriptor {
+        let mappedField: FileSortField = switch field {
+        case .name: .name
+        case .size: .size
+        case .modified: .modificationDate
+        case .kind: .kind
+        }
+        return FileSortDescriptor(
+            field: mappedField,
+            direction: ascending ? .ascending : .descending,
+            directoriesFirst: true
+        )
     }
 }
