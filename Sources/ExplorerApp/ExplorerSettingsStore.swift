@@ -26,7 +26,9 @@ final class ExplorerSettingsStore {
 
     private enum Key {
         static let frame = "Explorer.window.frame"
-        static let sidebarWidth = "Explorer.window.sidebarWidth"
+        // v2 intentionally resets widths persisted while divider dragging was
+        // constrained incorrectly. Subsequent changes continue to persist.
+        static let sidebarWidth = "Explorer.window.sidebarWidth.v2"
         static let viewMode = "Explorer.browser.viewMode"
         static let showsPreview = "Explorer.browser.showsPreview"
         static let showsHiddenFiles = "Explorer.browser.showsHiddenFiles"

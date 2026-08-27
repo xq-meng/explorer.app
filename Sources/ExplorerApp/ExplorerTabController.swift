@@ -26,7 +26,6 @@ final class ExplorerTabController: NSViewController {
     private let operationQueue: FileOperationQueue
     private let clipboard: FileClipboardService
     private let initialSidebarWidth: CGFloat?
-    private var sidebarLocations: [BrowserSidebarLocation]
     private(set) var currentDirectoryURL: URL?
     private(set) var viewMode: BrowserViewMode
     private(set) var sortDescriptor: BrowserSortDescriptor
@@ -46,7 +45,6 @@ final class ExplorerTabController: NSViewController {
     private var pendingOperationIDs = Set<UUID>()
     private var previewURLs: [URL] = []
     private var sidebarLoadTasks: [URL: Task<Void, Never>] = [:]
-    private var sidebarRevealTask: Task<Void, Never>?
     private var pendingInlineRenameURL: URL?
     private var thumbnailTasks: [URL: Task<Void, Never>] = [:]
     private var thumbnailRequestIDs: [URL: UUID] = [:]
@@ -70,7 +68,6 @@ final class ExplorerTabController: NSViewController {
         initialSidebarWidth = sidebarWidth
         self.operationQueue = operationQueue
         self.clipboard = clipboard
-        self.sidebarLocations = sidebarLocations
         super.init(nibName: nil, bundle: nil)
         browser.displaySidebarLocations(sidebarLocations)
         browser.setViewMode(initialViewMode)
@@ -105,7 +102,6 @@ final class ExplorerTabController: NSViewController {
         searchTask?.cancel()
         monitorTask?.cancel()
         sidebarLoadTasks.values.forEach { $0.cancel() }
-        sidebarRevealTask?.cancel()
         thumbnailTasks.values.forEach { $0.cancel() }
     }
 
@@ -130,8 +126,6 @@ final class ExplorerTabController: NSViewController {
         stopMonitoring()
         sidebarLoadTasks.values.forEach { $0.cancel() }
         sidebarLoadTasks.removeAll()
-        sidebarRevealTask?.cancel()
-        sidebarRevealTask = nil
     }
 
     func setViewMode(_ mode: BrowserViewMode) {
@@ -167,9 +161,7 @@ final class ExplorerTabController: NSViewController {
     }
 
     func updateSidebarLocations(_ locations: [BrowserSidebarLocation]) {
-        sidebarLocations = locations
         browser.displaySidebarLocations(locations)
-        if let currentDirectoryURL { revealCurrentDirectoryInSidebar(currentDirectoryURL) }
     }
 
     func showStatus(_ message: String) { browser.showStatus(message) }
@@ -330,54 +322,11 @@ final class ExplorerTabController: NSViewController {
         }
     }
 
-    private func revealCurrentDirectoryInSidebar(_ destinationURL: URL) {
-        sidebarRevealTask?.cancel()
-        let destination = destinationURL.standardizedFileURL
-        guard let root = sidebarLocations
-            .filter({ Self.contains(destination, in: $0.url) })
-            .max(by: { $0.url.path.count < $1.url.path.count }) else { return }
-        let loader = sidebarLoader
-        let options = sidebarLoadOptions
-        sidebarRevealTask = Task { [weak self] in
-            var parent = root.url.standardizedFileURL
-            if parent == destination {
-                self?.browser.revealSidebarLocation(destination)
-                return
-            }
-
-            let rootComponents = parent.pathComponents
-            let destinationComponents = destination.pathComponents
-            guard destinationComponents.starts(with: rootComponents) else { return }
-            for component in destinationComponents.dropFirst(rootComponents.count) {
-                do {
-                    let snapshot = try await loader.load(parent, options: options)
-                    guard !Task.isCancelled, let self else { return }
-                    self.browser.displaySidebarChildren(Self.sidebarFolders(from: snapshot), for: parent)
-                    parent.appendPathComponent(component, isDirectory: true)
-                } catch is CancellationError {
-                    return
-                } catch FileProviderError.cancelled {
-                    return
-                } catch {
-                    return
-                }
-            }
-            guard !Task.isCancelled, let self else { return }
-            self.browser.revealSidebarLocation(destination)
-        }
-    }
-
     private static func sidebarFolders(from snapshot: DirectorySnapshot) -> [BrowserSidebarLocation] {
         snapshot.items.compactMap { item in
             guard item.kind == .directory, !item.isPackage, !item.isSymbolicLink else { return nil }
             return BrowserSidebarLocation(title: item.name, url: item.url)
         }
-    }
-
-    private static func contains(_ candidate: URL, in root: URL) -> Bool {
-        let candidatePath = candidate.standardizedFileURL.path
-        let rootPath = root.standardizedFileURL.path
-        return rootPath == "/" || candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
     }
 
     private func requestDirectory(_ url: URL, origin: NavigationOrigin) {
@@ -428,7 +377,6 @@ final class ExplorerTabController: NSViewController {
             if viewMode != .details { setViewMode(.details) }
             browser.beginRenaming(pendingInlineRenameURL)
         }
-        revealCurrentDirectoryInSidebar(snapshot.directoryURL)
         onTitleChange?(displayTitle)
         let label = "\(snapshot.items.count) \(snapshot.items.count == 1 ? "item" : "items")"
         browser.showStatus(snapshot.issues.isEmpty ? label : "\(label); \(snapshot.issues.count) item(s) could not be read.")

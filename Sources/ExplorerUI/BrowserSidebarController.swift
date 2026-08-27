@@ -12,7 +12,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     var onMoveToTrash: ((URL) -> Void)?
     var onRemoveFavorite: ((URL) -> Void)?
 
-    private var roots: [SidebarNode] = []
+    private var groups: [SidebarGroup] = []
     private var requestedURLs = Set<URL>()
 
     override init() {
@@ -58,15 +58,27 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     }
 
     func displayRoots(_ locations: [BrowserSidebarLocation]) {
-        let existing = Dictionary(uniqueKeysWithValues: roots.map { ($0.location.url, $0) })
-        roots = locations.map { location in
-            if let node = existing[location.url] {
-                node.location = location
-                return node
+        let existingNodes = Dictionary(uniqueKeysWithValues: groups
+            .flatMap(\.children)
+            .map { ($0.location.url, $0) })
+        let existingGroups = Dictionary(uniqueKeysWithValues: groups.map { ($0.section, $0) })
+
+        groups = SidebarSection.allCases.compactMap { section in
+            let sectionLocations = locations.filter { section.contains($0.kind) }
+            guard !sectionLocations.isEmpty else { return nil }
+            let group = existingGroups[section] ?? SidebarGroup(section: section)
+            group.children = sectionLocations.map { location in
+                if let node = existingNodes[location.url] {
+                    node.location = location
+                    node.parent = nil
+                    return node
+                }
+                return SidebarNode(location: location)
             }
-            return SidebarNode(location: location)
+            return group
         }
         outlineView.reloadData()
+        groups.forEach { outlineView.expandItem($0) }
     }
 
     func displayChildren(_ locations: [BrowserSidebarLocation], for parentURL: URL) {
@@ -84,19 +96,6 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         if !(parent.children?.isEmpty ?? true) { outlineView.expandItem(parent) }
     }
 
-    func reveal(_ url: URL) {
-        guard let node = findNode(url.standardizedFileURL) else { return }
-        var ancestor = node.parent
-        while let current = ancestor {
-            outlineView.expandItem(current)
-            ancestor = current.parent
-        }
-        let row = outlineView.row(forItem: node)
-        guard row >= 0 else { return }
-        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        outlineView.scrollRowToVisible(row)
-    }
-
     private func findNode(_ url: URL) -> SidebarNode? {
         func visit(_ nodes: [SidebarNode]) -> SidebarNode? {
             for node in nodes {
@@ -105,7 +104,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
             }
             return nil
         }
-        return visit(roots)
+        return visit(groups.flatMap(\.children))
     }
 
     @objc private func selectLocation(_ sender: Any?) {
@@ -162,20 +161,25 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        (item as? SidebarNode)?.children?.count ?? (item == nil ? roots.count : 0)
+        if let group = item as? SidebarGroup { return group.children.count }
+        if let node = item as? SidebarNode { return node.children?.count ?? 0 }
+        return item == nil ? groups.count : 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let group = item as? SidebarGroup { return group.children[index] }
         if let node = item as? SidebarNode { return node.children![index] }
-        return roots[index]
+        return groups[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        if item is SidebarGroup { return true }
         guard let node = item as? SidebarNode else { return false }
         return node.children == nil || !(node.children?.isEmpty ?? true)
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
+        if item is SidebarGroup { return true }
         guard let node = item as? SidebarNode else { return false }
         if node.children == nil, requestedURLs.insert(node.location.url).inserted {
             onExpansionRequest?(node.location.url)
@@ -184,6 +188,13 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        if let group = item as? SidebarGroup {
+            let identifier = NSUserInterfaceItemIdentifier("sidebar.group")
+            let cell = (outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView)
+                ?? makeGroupCell(identifier: identifier)
+            cell.textField?.stringValue = group.section.title
+            return cell
+        }
         guard let node = item as? SidebarNode else { return nil }
         let identifier = NSUserInterfaceItemIdentifier("sidebar.cell")
         let cell = (outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView)
@@ -198,6 +209,31 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         }
         cell.imageView?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: node.location.title)
         cell.imageView?.contentTintColor = .secondaryLabelColor
+        return cell
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
+        item is SidebarGroup
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        item is SidebarNode
+    }
+
+    private func makeGroupCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
+        let cell = NSTableCellView()
+        cell.identifier = identifier
+        let label = NSTextField(labelWithString: "")
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        cell.textField = label
+        cell.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 3),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
         return cell
     }
 
@@ -223,6 +259,37 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
             label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
+    }
+}
+
+private enum SidebarSection: Int, CaseIterable {
+    case favorites
+    case volumes
+    case folders
+
+    var title: String {
+        switch self {
+        case .favorites: "Favorites"
+        case .volumes: "Volumes"
+        case .folders: "Folders"
+        }
+    }
+
+    func contains(_ kind: BrowserSidebarLocationKind) -> Bool {
+        switch (self, kind) {
+        case (.favorites, .favorite), (.volumes, .volume), (.folders, .folder): true
+        default: false
+        }
+    }
+}
+
+@MainActor
+private final class SidebarGroup: NSObject {
+    let section: SidebarSection
+    var children: [SidebarNode] = []
+
+    init(section: SidebarSection) {
+        self.section = section
     }
 }
 

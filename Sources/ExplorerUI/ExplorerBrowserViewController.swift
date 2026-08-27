@@ -48,6 +48,12 @@ public final class ExplorerBrowserViewController: NSViewController {
     private var renamingURL: URL?
     private var renameWasCancelled = false
     private var isApplyingSortDescriptor = false
+    private var requestedSidebarWidth: CGFloat = SidebarLayout.defaultWidth
+    private var sidebarWidthUpdateGeneration = 0
+    private var canReportSidebarWidth = false
+    private var isApplyingSidebarWidth = false
+    private var previewPaneWidth: CGFloat = 320
+    private var previewVisibilityGeneration = 0
     private let thumbnailCache = NSCache<NSURL, NSImage>()
 
     public private(set) var viewMode: BrowserViewMode = .details
@@ -86,7 +92,6 @@ public final class ExplorerBrowserViewController: NSViewController {
     public func displayPath(_ path: String) {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         breadcrumbBar.display(url)
-        sidebarController.reveal(url)
         showStatus("Showing \(path)")
     }
 
@@ -176,8 +181,41 @@ public final class ExplorerBrowserViewController: NSViewController {
 
     public func setPreviewVisible(_ isVisible: Bool) {
         isPreviewVisible = isVisible
-        previewView.isHidden = !isVisible
-        contentSplitView?.adjustSubviews()
+        previewVisibilityGeneration &+= 1
+        guard let contentSplitView else {
+            previewView.isHidden = !isVisible
+            return
+        }
+
+        if isVisible {
+            previewView.isHidden = false
+            if previewView.superview !== contentSplitView {
+                contentSplitView.addArrangedSubview(previewView)
+            }
+            positionPreviewPane(in: contentSplitView)
+        } else {
+            if previewView.frame.width > 0 {
+                previewPaneWidth = min(420, max(210, previewView.frame.width))
+            }
+            previewView.removeFromSuperview()
+            previewView.isHidden = true
+            contentSplitView.adjustSubviews()
+        }
+    }
+
+    private func positionPreviewPane(in splitView: NSSplitView) {
+        let generation = previewVisibilityGeneration
+        applyPreviewPanePosition(in: splitView, generation: generation)
+        DispatchQueue.main.async { [weak self, weak splitView] in
+            guard let self, let splitView else { return }
+            self.applyPreviewPanePosition(in: splitView, generation: generation)
+        }
+    }
+
+    private func applyPreviewPanePosition(in splitView: NSSplitView, generation: Int) {
+        guard isPreviewVisible, previewView.superview === splitView,
+              generation == previewVisibilityGeneration else { return }
+        splitView.setPosition(max(300, splitView.bounds.width - previewPaneWidth), ofDividerAt: 0)
     }
 
     /// Clears a per-tab query after navigation without making the UI layer
@@ -187,12 +225,22 @@ public final class ExplorerBrowserViewController: NSViewController {
     }
 
     public func setSidebarWidth(_ width: CGFloat) {
+        requestedSidebarWidth = min(SidebarLayout.maximumWidth, max(SidebarLayout.minimumWidth, width))
+        sidebarWidthUpdateGeneration &+= 1
+        let generation = sidebarWidthUpdateGeneration
         guard let splitView, splitView.subviews.count > 1 else { return }
-        let position = max(180, min(380, width))
-        splitView.setPosition(position, ofDividerAt: 0)
-        DispatchQueue.main.async { [weak splitView] in
-            splitView?.setPosition(position, ofDividerAt: 0)
+        applySidebarWidth(to: splitView)
+        DispatchQueue.main.async { [weak self, weak splitView] in
+            guard let self, let splitView, generation == self.sidebarWidthUpdateGeneration else { return }
+            self.applySidebarWidth(to: splitView)
+            self.canReportSidebarWidth = true
         }
+    }
+
+    private func applySidebarWidth(to splitView: NSSplitView) {
+        isApplyingSidebarWidth = true
+        splitView.setPosition(requestedSidebarWidth, ofDividerAt: 0)
+        isApplyingSidebarWidth = false
     }
 
     /// Supplies locations resolved by the application layer, rather than
@@ -206,10 +254,6 @@ public final class ExplorerBrowserViewController: NSViewController {
         sidebarController.displayChildren(locations, for: parentURL)
     }
 
-    public func revealSidebarLocation(_ url: URL) {
-        sidebarController.reveal(url)
-    }
-
     private func makeSplitView() -> NSSplitView {
         let splitView = NSSplitView()
         splitView.translatesAutoresizingMaskIntoConstraints = false
@@ -219,17 +263,9 @@ public final class ExplorerBrowserViewController: NSViewController {
         let content = makeContentArea()
         splitView.addArrangedSubview(sidebar)
         splitView.addArrangedSubview(content)
-        let sidebarMinimum = sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
-        let sidebarMaximum = sidebar.widthAnchor.constraint(lessThanOrEqualToConstant: 380)
-        let contentMinimum = content.widthAnchor.constraint(greaterThanOrEqualToConstant: 520)
-        sidebarMaximum.priority = .defaultHigh
-        contentMinimum.priority = .defaultHigh
-        NSLayoutConstraint.activate([sidebarMinimum, sidebarMaximum, contentMinimum])
-        DispatchQueue.main.async { [weak splitView] in
-            splitView?.setPosition(230, ofDividerAt: 0)
-        }
         splitView.delegate = self
         self.splitView = splitView
+        setSidebarWidth(requestedSidebarWidth)
         return splitView
     }
 
@@ -349,17 +385,17 @@ public final class ExplorerBrowserViewController: NSViewController {
         browserSplitView.dividerStyle = .thin
         browserSplitView.translatesAutoresizingMaskIntoConstraints = false
         browserSplitView.addArrangedSubview(contentHost)
-        browserSplitView.addArrangedSubview(previewView)
+        if isPreviewVisible {
+            browserSplitView.addArrangedSubview(previewView)
+        }
         browserSplitView.delegate = self
         let contentMinimum = contentHost.widthAnchor.constraint(greaterThanOrEqualToConstant: 300)
         let previewMinimum = previewView.widthAnchor.constraint(greaterThanOrEqualToConstant: 210)
         let previewMaximum = previewView.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
         [contentMinimum, previewMinimum, previewMaximum].forEach { $0.priority = .defaultHigh; $0.isActive = true }
         contentSplitView = browserSplitView
-        DispatchQueue.main.async { [weak browserSplitView] in
-            guard let browserSplitView else { return }
-            browserSplitView.setPosition(max(320, browserSplitView.bounds.width - 320), ofDividerAt: 0)
-        }
+        previewView.isHidden = !isPreviewVisible
+        if isPreviewVisible { positionPreviewPane(in: browserSplitView) }
 
         let navigation = NSStackView(views: [
             makeNavigationButton(symbol: "chevron.left", help: "Back", tag: 0),
@@ -848,9 +884,47 @@ extension ExplorerBrowserViewController: NSCollectionViewDataSource, NSCollectio
 
 extension ExplorerBrowserViewController: NSSplitViewDelegate {
     public func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard let splitView, splitView.subviews.count > 1 else { return }
-        onSidebarWidthChange?(splitView.subviews[0].frame.width)
+        guard canReportSidebarWidth, !isApplyingSidebarWidth,
+              let splitView, splitView.subviews.count > 1 else { return }
+        let width = splitView.subviews[0].frame.width
+        guard width >= SidebarLayout.minimumWidth, width <= SidebarLayout.maximumWidth else { return }
+        requestedSidebarWidth = width
+        onSidebarWidthChange?(width)
     }
+
+    public func splitView(
+        _ splitView: NSSplitView,
+        constrainMinCoordinate proposedMinimumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        guard splitView === self.splitView, dividerIndex == 0 else { return proposedMinimumPosition }
+        return max(proposedMinimumPosition, SidebarLayout.minimumWidth)
+    }
+
+    public func splitView(
+        _ splitView: NSSplitView,
+        constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        guard splitView === self.splitView, dividerIndex == 0 else { return proposedMaximumPosition }
+        let contentLimitedWidth = max(
+            SidebarLayout.minimumWidth,
+            splitView.bounds.width - SidebarLayout.minimumContentWidth - splitView.dividerThickness
+        )
+        return min(proposedMaximumPosition, SidebarLayout.maximumWidth, contentLimitedWidth)
+    }
+
+    public func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool {
+        guard splitView === self.splitView, let sidebar = splitView.subviews.first else { return true }
+        return view !== sidebar
+    }
+}
+
+private enum SidebarLayout {
+    static let defaultWidth: CGFloat = 176
+    static let minimumWidth: CGFloat = 148
+    static let maximumWidth: CGFloat = 300
+    static let minimumContentWidth: CGFloat = 480
 }
 
 extension ExplorerBrowserViewController: NSMenuDelegate {

@@ -24,10 +24,10 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         let controller = BrowserSidebarController()
         let rootURL = URL(fileURLWithPath: "/tmp/sidebar-root", isDirectory: true)
         let childURL = rootURL.appendingPathComponent("Child", isDirectory: true)
-        controller.displayRoots([BrowserSidebarLocation(title: "Root", url: rootURL)])
+        controller.displayRoots([BrowserSidebarLocation(title: "Root", url: rootURL, kind: .favorite)])
 
-        XCTAssertEqual(controller.outlineView.numberOfRows, 1)
-        guard let root = controller.outlineView.item(atRow: 0) else {
+        XCTAssertEqual(controller.outlineView.numberOfRows, 2)
+        guard let root = controller.outlineView.item(atRow: 1) else {
             return XCTFail("Expected a visible root node")
         }
 
@@ -42,6 +42,60 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         )
         XCTAssertEqual(controller.outlineView(controller.outlineView, numberOfChildrenOfItem: root), 1)
         XCTAssertGreaterThanOrEqual(controller.outlineView.numberOfRows, 2)
+    }
+
+    func testRightPaneNavigationDoesNotChangeSidebarSelection() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        controller.displaySidebarLocations([
+            BrowserSidebarLocation(
+                title: "Home",
+                url: URL(fileURLWithPath: "/tmp/sidebar-home", isDirectory: true),
+                kind: .favorite
+            ),
+        ])
+        guard let outlineView = firstDescendant(of: controller.view, as: NSOutlineView.self) else {
+            return XCTFail("Expected the Favorites tree")
+        }
+        outlineView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+
+        controller.displayPath("/tmp/an-independent-location")
+
+        XCTAssertEqual(outlineView.selectedRow, 1)
+    }
+
+    func testSidebarDividerCanBeAdjustedAfterInitialLayout() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1_080, height: 680)
+        controller.view.layoutSubtreeIfNeeded()
+        guard let splitView = controller.view.subviews.compactMap({ $0 as? NSSplitView }).first else {
+            return XCTFail("Expected the browser split view")
+        }
+
+        controller.setSidebarWidth(196)
+        controller.view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(splitView.subviews[0].frame.width, 196, accuracy: 1)
+
+        splitView.setPosition(244, ofDividerAt: 0)
+        controller.view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(splitView.subviews[0].frame.width, 244, accuracy: 1)
+    }
+
+    func testHidingPreviewRemovesItsSplitDivider() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        let splitViews = allDescendants(of: controller.view, as: NSSplitView.self)
+        guard let previewSplitView = splitViews.dropFirst().first else {
+            return XCTFail("Expected the preview split view")
+        }
+        XCTAssertEqual(previewSplitView.arrangedSubviews.count, 2)
+
+        controller.setPreviewVisible(false)
+        XCTAssertEqual(previewSplitView.arrangedSubviews.count, 1)
+
+        controller.setPreviewVisible(true)
+        XCTAssertEqual(previewSplitView.arrangedSubviews.count, 2)
     }
 
     func testTableSortDescriptorRoutesAStableBrowserSortIntent() {
