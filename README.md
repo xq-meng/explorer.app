@@ -1,0 +1,89 @@
+# Explorer.app
+
+Explorer.app is a native macOS file manager that combines the navigation and productivity model of Windows Explorer with macOS system conventions and frameworks.
+
+The project is in active development. See [ROADMAP.md](ROADMAP.md) for scope, milestones, quality gates, and planned releases.
+
+## Current prototype
+
+The current implementation provides:
+
+- an AppKit application shell with independent tabs and navigation history;
+- asynchronous local directory browsing, mounted volumes, details and icon views;
+- a lazy folder tree that follows navigation, clickable/editable breadcrumbs, and `Command-L` address entry;
+- current-folder search, directory change monitoring, an embedded/toggleable Quick Look pane, and file URL drag/drop;
+- an Explorer-style status bar with item, selection, and selected-size summaries;
+- a queued, testable file-operation engine for create, rename, copy, move, duplicate, paste, and Trash;
+- safe Undo/Redo plans routed back through the same operation queue and conflict checks;
+- custom Favorites plus tab-path and selected-tab restoration between launches;
+- Swift unit, integration, cancellation, conflict, and filesystem-safety tests.
+
+This is a development prototype, not the roadmap's Beta release. The directory
+tree still needs large-volume performance validation; the Spotlight backend,
+file promises, sandbox access, signing, and notarization remain planned work.
+
+## Product reference
+
+The interface direction is informed by
+[ronhash10/MacExplorer](https://github.com/ronhash10/MacExplorer), an MIT-licensed
+SwiftUI project. Explorer.app keeps its own AppKit presentation and actor-backed
+browsing/operation modules; the reference repository is not vendored as a source
+dependency.
+
+## Requirements
+
+- macOS 14 or later
+- A recent Xcode release with Swift 6 support
+
+## Build and run
+
+The development project uses Swift Package Manager so it can be opened directly in Xcode or built from Terminal:
+
+```bash
+swift build
+swift test
+swift run ExplorerApp
+```
+
+For a normal macOS application bundle, package an ad-hoc-signed development build:
+
+```bash
+./scripts/package-app.sh
+./scripts/run-app.sh
+```
+
+The bundle is written to `.build/artifacts/Explorer.app`. It is suitable for
+local development; Developer ID signing, notarization, an application icon,
+and a distributable DMG remain release work.
+
+## Useful commands
+
+- `Command-L`: edit the current path
+- `Command-Shift-P`: toggle the preview pane
+- `Command-Control-D`: add the current folder to Favorites
+- `Command-Z` / `Command-Shift-Z`: undo or redo a completed file operation
+- `Space`: open the selected item in the Quick Look panel
+
+## Architecture
+
+```text
+ExplorerApp         Lifecycle, dependency composition, tabs, and persisted state
+├── ExplorerUI      Presentation-only AppKit views and browser commands
+├── ExplorerBrowsing  Directory loading, search, volumes, monitoring, thumbnails
+│   └── ExplorerCore  Sendable filesystem models and provider contracts
+└── ExplorerOperations  Mutations, queue, clipboard, conflict safety, Undo plans
+```
+
+`ExplorerUI` has no dependency on filesystem modules. `ExplorerApp` is the only
+composition root; browsing and operation actors run blocking work away from the
+main actor and publish immutable results for the app to map into presentation data.
+
+## Safety principles
+
+- Never overwrite a destination silently.
+- Run Undo/Redo through the same conflict validation; replacement operations are intentionally not recorded as undoable.
+- Move across volumes by copying successfully before removing the source.
+- Send normal deletion to the Trash.
+- Keep long-running I/O cancellable and off the main thread.
+- Treat filesystem notifications as invalidation signals and verify disk state again.
+- Do not use path strings as the sole identity of a file.
