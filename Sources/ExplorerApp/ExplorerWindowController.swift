@@ -29,6 +29,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         let frame = (storedFrame?.width ?? 0) >= 900 && (storedFrame?.height ?? 0) >= 560 ? storedFrame! : defaultFrame
         let window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Explorer"
+        window.titleVisibility = .hidden
         window.minSize = NSSize(width: 900, height: 560)
         window.titlebarAppearsTransparent = true
         window.backgroundColor = .windowBackgroundColor
@@ -36,6 +37,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         if storedFrame == nil { window.center() }
         super.init(window: window)
         window.delegate = self
+        window.addTitlebarAccessoryViewController(tabViewController.makeTitlebarAccessoryViewController())
+        updateTitlebarTabsWidth()
         tabViewController.onSelectionChange = { [weak self] in
             self?.sessions.forEach { $0.closeQuickLook() }
             self?.updateWindowTitle()
@@ -154,6 +157,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) { updateWindowTitle() }
+    func windowDidResize(_ notification: Notification) { updateTitlebarTabsWidth() }
+    func windowDidEnterFullScreen(_ notification: Notification) { updateTitlebarTabsWidth() }
+    func windowDidExitFullScreen(_ notification: Notification) { updateTitlebarTabsWidth() }
     func windowDidEndLiveResize(_ notification: Notification) { persistWindowState() }
     func windowWillClose(_ notification: Notification) {
         persistWindowState()
@@ -173,6 +179,24 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private var currentSession: ExplorerTabController? { selectedTabItem?.viewController as? ExplorerTabController }
     private var restoredViewMode: BrowserViewMode { settings.viewMode }
     private var restoredPreviewVisibility: Bool { settings.showsPreview }
+
+    private func updateTitlebarTabsWidth() {
+        guard let window else { return }
+        let buttonFrames = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { type -> NSRect? in
+            guard let button = window.standardWindowButton(type), let superview = button.superview else { return nil }
+            return superview.convert(button.frame, to: nil)
+        }
+        let controlsFrame = buttonFrames.reduce(NSRect.null) { $0.union($1) }
+        let controlsWidth: CGFloat
+        if controlsFrame.isNull {
+            controlsWidth = 80
+        } else if window.windowTitlebarLayoutDirection == .rightToLeft {
+            controlsWidth = window.frame.width - controlsFrame.minX
+        } else {
+            controlsWidth = controlsFrame.maxX
+        }
+        tabViewController.setTitlebarAccessoryWidth(max(220, window.frame.width - controlsWidth - 12))
+    }
 
     private var standardSidebarLocations: [BrowserSidebarLocation] {
         var locations = [BrowserSidebarLocation(title: "Home", url: homeURL, kind: .favorite)]

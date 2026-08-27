@@ -9,6 +9,7 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
 
     private let tabView = NSTabView()
     private let tabStrip = ExplorerTabStripView()
+    private var titlebarAccessoryController: ExplorerTabTitlebarAccessoryViewController?
 
     var tabViewItems: [NSTabViewItem] { tabView.tabViewItems }
 
@@ -30,7 +31,6 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
         tabView.tabViewType = .noTabsNoBorder
         tabView.delegate = self
         tabView.translatesAutoresizingMaskIntoConstraints = false
-        tabStrip.translatesAutoresizingMaskIntoConstraints = false
         tabStrip.onSelect = { [weak self] index in self?.selectedTabViewItemIndex = index }
         tabStrip.onNewTab = { [weak self] in self?.onNewTab?() }
         tabStrip.onClose = { [weak self] index in
@@ -42,18 +42,25 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
             self?.moveTab(from: source, to: destination)
         }
 
-        view.addSubview(tabStrip)
         view.addSubview(tabView)
         NSLayoutConstraint.activate([
-            tabStrip.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tabStrip.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tabStrip.topAnchor.constraint(equalTo: view.topAnchor),
-            tabStrip.heightAnchor.constraint(equalToConstant: 38),
             tabView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tabView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tabView.topAnchor.constraint(equalTo: tabStrip.bottomAnchor),
+            tabView.topAnchor.constraint(equalTo: view.topAnchor),
             tabView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+    }
+
+    func makeTitlebarAccessoryViewController() -> NSTitlebarAccessoryViewController {
+        loadViewIfNeeded()
+        if let titlebarAccessoryController { return titlebarAccessoryController }
+        let controller = ExplorerTabTitlebarAccessoryViewController(tabStrip: tabStrip)
+        titlebarAccessoryController = controller
+        return controller
+    }
+
+    func setTitlebarAccessoryWidth(_ width: CGFloat) {
+        titlebarAccessoryController?.setPreferredWidth(width)
     }
 
     func addTabViewItem(_ item: NSTabViewItem) {
@@ -93,27 +100,61 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
 }
 
 @MainActor
+private final class ExplorerTabTitlebarAccessoryViewController: NSTitlebarAccessoryViewController {
+    private static let preferredHeight: CGFloat = 30
+    private let tabStrip: ExplorerTabStripView
+
+    init(tabStrip: ExplorerTabStripView) {
+        self.tabStrip = tabStrip
+        super.init(nibName: nil, bundle: nil)
+        layoutAttribute = .leading
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func loadView() {
+        tabStrip.frame = NSRect(x: 0, y: 0, width: 800, height: Self.preferredHeight)
+        tabStrip.autoresizingMask = [.width, .height]
+        view = tabStrip
+    }
+
+    func setPreferredWidth(_ width: CGFloat) {
+        loadViewIfNeeded()
+        view.setFrameSize(NSSize(width: max(0, width), height: Self.preferredHeight))
+    }
+}
+
+@MainActor
 private final class ExplorerTabStripView: NSView {
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
     var onNewTab: (() -> Void)?
     var onMove: ((Int, Int) -> Void)?
 
-    private let tabStack = NSStackView()
+    private let scrollView = ExplorerTabScrollView()
+    private let tabStack = ExplorerTabStackView()
     private let addButton = NSButton()
-    private let separator = NSBox()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
         registerForDraggedTypes([.explorerTabIndex])
 
         tabStack.orientation = .horizontal
-        tabStack.alignment = .bottom
+        tabStack.alignment = .centerY
         tabStack.spacing = 3
-        tabStack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 0, right: 8)
-        tabStack.translatesAutoresizingMaskIntoConstraints = false
+        tabStack.edgeInsets = NSEdgeInsets(top: 2, left: 6, bottom: 2, right: 8)
+        tabStack.frame = NSRect(x: 0, y: 0, width: 38, height: 30)
+        tabStack.translatesAutoresizingMaskIntoConstraints = true
+
+        scrollView.drawsBackground = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.horizontalScrollElasticity = .automatic
+        scrollView.verticalScrollElasticity = .none
+        scrollView.documentView = tabStack
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         addButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")
         addButton.bezelStyle = .inline
@@ -121,42 +162,53 @@ private final class ExplorerTabStripView: NSView {
         addButton.target = self
         addButton.action = #selector(addTab(_:))
         addButton.toolTip = "New Tab (Command-T)"
-        addButton.translatesAutoresizingMaskIntoConstraints = false
+        addButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        addButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        tabStack.addArrangedSubview(addButton)
 
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(tabStack)
-        addSubview(addButton)
-        addSubview(separator)
+        addSubview(scrollView)
         NSLayoutConstraint.activate([
-            tabStack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            tabStack.topAnchor.constraint(equalTo: topAnchor),
-            tabStack.bottomAnchor.constraint(equalTo: separator.topAnchor),
-            addButton.leadingAnchor.constraint(equalTo: tabStack.trailingAnchor, constant: 2),
-            addButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            addButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            addButton.widthAnchor.constraint(equalToConstant: 26),
-            addButton.heightAnchor.constraint(equalToConstant: 26),
-            separator.leadingAnchor.constraint(equalTo: leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: trailingAnchor),
-            separator.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { nil }
 
     func update(titles: [String], selectedIndex: Int) {
-        tabStack.arrangedSubviews.forEach {
+        tabStack.arrangedSubviews.filter { $0 !== addButton }.forEach {
             tabStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
+        var selectedItem: ExplorerTabItemView?
         for (index, title) in titles.enumerated() {
             let item = ExplorerTabItemView(title: title, isSelected: index == selectedIndex, dragIndex: index)
             item.onSelect = { [weak self] in self?.onSelect?(index) }
             item.onClose = { [weak self] in self?.onClose?(index) }
-            tabStack.addArrangedSubview(item)
+            tabStack.insertArrangedSubview(item, at: index)
+            if index == selectedIndex { selectedItem = item }
         }
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        if let selectedItem { tabStack.scrollToVisible(selectedItem.frame) }
     }
+
+    override func layout() {
+        super.layout()
+        let viewportSize = scrollView.contentSize
+        let fittingSize = tabStack.fittingSize
+        tabStack.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: max(viewportSize.width, fittingSize.width),
+            height: viewportSize.height
+        )
+        tabStack.layoutSubtreeIfNeeded()
+    }
+
+    override var mouseDownCanMoveWindow: Bool { true }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         proposedMove(for: sender) == nil ? [] : .move
@@ -176,16 +228,26 @@ private final class ExplorerTabStripView: NSView {
         guard let sourceView = info.draggingSource as? ExplorerTabItemView,
               tabStack.arrangedSubviews.contains(where: { $0 === sourceView }) else { return nil }
         let source = sourceView.dragIndex
-        let point = convert(info.draggingLocation, from: nil)
+        let point = tabStack.convert(info.draggingLocation, from: nil)
         var destination = tabStack.arrangedSubviews.firstIndex { item in
-            point.x < convert(item.bounds, from: item).midX
-        } ?? tabStack.arrangedSubviews.count
+            item !== addButton && point.x < item.frame.midX
+        } ?? max(0, tabStack.arrangedSubviews.count - 1)
         if source < destination { destination -= 1 }
-        destination = min(max(0, destination), tabStack.arrangedSubviews.count - 1)
+        destination = min(max(0, destination), max(0, tabStack.arrangedSubviews.count - 2))
         return (source, destination)
     }
 
     @objc private func addTab(_ sender: Any?) { onNewTab?() }
+}
+
+@MainActor
+private final class ExplorerTabScrollView: NSScrollView {
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
+@MainActor
+private final class ExplorerTabStackView: NSStackView {
+    override var mouseDownCanMoveWindow: Bool { true }
 }
 
 @MainActor
@@ -234,7 +296,7 @@ private final class ExplorerTabItemView: NSView, NSDraggingSource {
         NSLayoutConstraint.activate([
             widthAnchor.constraint(greaterThanOrEqualToConstant: 110),
             widthAnchor.constraint(lessThanOrEqualToConstant: 210),
-            heightAnchor.constraint(equalToConstant: 30),
+            heightAnchor.constraint(equalToConstant: 26),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
