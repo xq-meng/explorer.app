@@ -29,6 +29,14 @@ public struct BrowserPromisedFileDrop {
     }
 }
 
+protocol BrowserDropPasteboardReading {
+    var hasFileURLs: Bool { get }
+    var hasPromisedFiles: Bool { get }
+
+    func readFileURLs() -> [URL]
+    func readPromisedFileReceivers() -> [NSFilePromiseReceiver]
+}
+
 public enum BrowserDropPasteboard {
     public static var promisedFileTypes: [NSPasteboard.PasteboardType] {
         NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
@@ -39,30 +47,64 @@ public enum BrowserDropPasteboard {
     }
 
     public static func canAccept(_ pasteboard: NSPasteboard) -> Bool {
-        containsFileURLs(pasteboard) || containsPromisedFiles(pasteboard)
+        canAccept(AppKitBrowserDropPasteboardReader(pasteboard: pasteboard))
     }
 
     public static func containsFileURLs(_ pasteboard: NSPasteboard) -> Bool {
-        pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        containsFileURLs(AppKitBrowserDropPasteboardReader(pasteboard: pasteboard))
     }
 
     public static func containsPromisedFiles(_ pasteboard: NSPasteboard) -> Bool {
-        pasteboard.availableType(from: promisedFileTypes) != nil
+        containsPromisedFiles(AppKitBrowserDropPasteboardReader(pasteboard: pasteboard))
     }
 
     public static func read(_ pasteboard: NSPasteboard) -> BrowserDropPayload {
-        let fileURLs = fileURLs(from: pasteboard)
+        read(AppKitBrowserDropPasteboardReader(pasteboard: pasteboard))
+    }
+
+    static func canAccept(_ reader: any BrowserDropPasteboardReading) -> Bool {
+        containsFileURLs(reader) || containsPromisedFiles(reader)
+    }
+
+    static func containsFileURLs(_ reader: any BrowserDropPasteboardReading) -> Bool {
+        reader.hasFileURLs
+    }
+
+    static func containsPromisedFiles(_ reader: any BrowserDropPasteboardReading) -> Bool {
+        reader.hasPromisedFiles
+    }
+
+    static func read(_ reader: any BrowserDropPasteboardReading) -> BrowserDropPayload {
+        let fileURLs = reader.readFileURLs()
         if !fileURLs.isEmpty {
             return BrowserDropPayload(fileURLs: fileURLs, promisedFileReceivers: [])
         }
-        let receivers = pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil)
-            as? [NSFilePromiseReceiver] ?? []
-        return BrowserDropPayload(fileURLs: [], promisedFileReceivers: receivers)
+        return BrowserDropPayload(
+            fileURLs: [],
+            promisedFileReceivers: reader.readPromisedFileReceivers()
+        )
+    }
+}
+
+private struct AppKitBrowserDropPasteboardReader: BrowserDropPasteboardReading {
+    let pasteboard: NSPasteboard
+
+    var hasFileURLs: Bool {
+        pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
     }
 
-    private static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+    var hasPromisedFiles: Bool {
+        pasteboard.availableType(from: BrowserDropPasteboard.promisedFileTypes) != nil
+    }
+
+    func readFileURLs() -> [URL] {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [NSURL] ?? []
         return objects.map { $0 as URL }
+    }
+
+    func readPromisedFileReceivers() -> [NSFilePromiseReceiver] {
+        pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil)
+            as? [NSFilePromiseReceiver] ?? []
     }
 }

@@ -181,15 +181,19 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
     }
 
     func testDropPasteboardPrefersFileURLsOverPromises() {
-        let pasteboard = NSPasteboard.withUniqueName()
-        pasteboard.clearContents()
         let url = URL(fileURLWithPath: "/tmp/explorer-drop-test.txt")
-        XCTAssertTrue(pasteboard.writeObjects([url as NSURL]))
+        let reader = BrowserDropPasteboardReaderStub(
+            fileURLs: [url],
+            hasPromisedFiles: true
+        )
 
-        XCTAssertTrue(BrowserDropPasteboard.containsFileURLs(pasteboard))
-        let payload = BrowserDropPasteboard.read(pasteboard)
+        XCTAssertTrue(BrowserDropPasteboard.canAccept(reader))
+        XCTAssertTrue(BrowserDropPasteboard.containsFileURLs(reader))
+        XCTAssertTrue(BrowserDropPasteboard.containsPromisedFiles(reader))
+        let payload = BrowserDropPasteboard.read(reader)
         XCTAssertEqual(payload.fileURLs.map(\.path), [url.standardizedFileURL.path])
         XCTAssertTrue(payload.promisedFileReceivers.isEmpty)
+        XCTAssertFalse(reader.didReadPromisedFileReceivers)
         XCTAssertTrue(BrowserDropPasteboard.draggedTypes.contains(.fileURL))
         XCTAssertFalse(BrowserDropPasteboard.promisedFileTypes.isEmpty)
     }
@@ -215,6 +219,28 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertNotNil(button)
         button?.performClick(nil)
         XCTAssertTrue(cancelled)
+    }
+}
+
+private final class BrowserDropPasteboardReaderStub: BrowserDropPasteboardReading {
+    let fileURLs: [URL]
+    let hasPromisedFiles: Bool
+    private(set) var didReadPromisedFileReceivers = false
+
+    var hasFileURLs: Bool { !fileURLs.isEmpty }
+
+    init(fileURLs: [URL], hasPromisedFiles: Bool) {
+        self.fileURLs = fileURLs
+        self.hasPromisedFiles = hasPromisedFiles
+    }
+
+    func readFileURLs() -> [URL] {
+        fileURLs
+    }
+
+    func readPromisedFileReceivers() -> [NSFilePromiseReceiver] {
+        didReadPromisedFileReceivers = true
+        return []
     }
 }
 

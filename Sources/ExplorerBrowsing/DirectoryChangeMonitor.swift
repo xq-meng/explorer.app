@@ -52,11 +52,12 @@ public actor DirectoryChangeMonitor {
             throw DirectoryChangeMonitorError.unavailable(directoryURL, code: Int(errno))
         }
 
-        let stream = AsyncStream<DirectoryInvalidation>(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            self.continuation = continuation
-            continuation.onTermination = { [weak self] _ in
-                Task { await self?.stop() }
-            }
+        let (stream, continuation) = AsyncStream<DirectoryInvalidation>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        self.continuation = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.stop() }
         }
 
         let source = DispatchSource.makeFileSystemObjectSource(
@@ -64,8 +65,8 @@ public actor DirectoryChangeMonitor {
             eventMask: [.write, .delete, .rename, .attrib, .extend, .link, .revoke],
             queue: DispatchQueue(label: "app.explorer.directory-change-monitor")
         )
-        source.setEventHandler { [weak self] in
-            Task { await self?.yieldInvalidation(for: directoryURL) }
+        source.setEventHandler {
+            continuation.yield(DirectoryInvalidation(directoryURL: directoryURL))
         }
         source.setCancelHandler {
             close(descriptor)
@@ -99,9 +100,5 @@ private extension DirectoryChangeMonitor {
         } catch {
             throw DirectoryChangeMonitorError.unavailable(url, code: (error as NSError).code)
         }
-    }
-
-    func yieldInvalidation(for url: URL) {
-        continuation?.yield(DirectoryInvalidation(directoryURL: url))
     }
 }
