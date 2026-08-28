@@ -21,9 +21,10 @@ final class ExplorerTabController: NSViewController {
     private let homeURL: URL
     private let directoryLoader = DirectoryLoader()
     private let sidebarLoader = DirectoryLoader()
-    private let searchService = SearchService()
-    private let thumbnailService = ThumbnailService()
-    private let operationQueue: FileOperationQueue
+    private let searchCoordinator = ExplorerTabSearchCoordinator()
+    private let thumbnailCoordinator = ExplorerTabThumbnailCoordinator()
+    private let operationCoordinator: ExplorerTabOperationCoordinator
+    private lazy var quickLookCoordinator = ExplorerQuickLookCoordinator(owner: self)
     private let clipboard: FileClipboardService
     private let initialSidebarWidth: CGFloat?
     private(set) var currentDirectoryURL: URL?
@@ -35,19 +36,13 @@ final class ExplorerTabController: NSViewController {
     private var selection: Set<URL> = []
     private var loadTask: Task<Void, Never>?
     private var loadGeneration: UInt = 0
-    private var searchTask: Task<Void, Never>?
-    private var searchGeneration: UInt = 0
     private var currentSnapshot: DirectorySnapshot?
     private var directoryMonitor: DirectoryChangeMonitor?
     private var monitorTask: Task<Void, Never>?
     private var monitorGeneration: UInt = 0
     private var didStart = false
-    private var pendingOperationIDs = Set<UUID>()
-    private var previewURLs: [URL] = []
     private var sidebarLoadTasks: [URL: Task<Void, Never>] = [:]
     private var pendingInlineRenameURL: URL?
-    private var thumbnailTasks: [URL: Task<Void, Never>] = [:]
-    private var thumbnailRequestIDs: [URL: UUID] = [:]
     private let filePromiseQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "app.explorer.file-promises"
@@ -73,7 +68,7 @@ final class ExplorerTabController: NSViewController {
         showsPreview = initialShowsPreview
         showsHiddenFiles = initialShowsHiddenFiles
         initialSidebarWidth = sidebarWidth
-        self.operationQueue = operationQueue
+        operationCoordinator = ExplorerTabOperationCoordinator(queue: operationQueue)
         self.clipboard = clipboard
         super.init(nibName: nil, bundle: nil)
         browser.displaySidebarLocations(sidebarLocations)
@@ -106,10 +101,8 @@ final class ExplorerTabController: NSViewController {
 
     deinit {
         loadTask?.cancel()
-        searchTask?.cancel()
         monitorTask?.cancel()
         sidebarLoadTasks.values.forEach { $0.cancel() }
-        thumbnailTasks.values.forEach { $0.cancel() }
     }
 
     var displayTitle: String {
@@ -129,7 +122,8 @@ final class ExplorerTabController: NSViewController {
         loadGeneration &+= 1
         loadTask?.cancel()
         loadTask = nil
-        cancelSearch()
+        searchCoordinator.cancel()
+        thumbnailCoordinator.cancelAll()
         stopMonitoring()
         sidebarLoadTasks.values.forEach { $0.cancel() }
         sidebarLoadTasks.removeAll()
@@ -138,7 +132,7 @@ final class ExplorerTabController: NSViewController {
     func setViewMode(_ mode: BrowserViewMode) {
         viewMode = mode
         browser.setViewMode(mode)
-        if mode == .details { cancelThumbnailRequests() }
+        if mode == .details { thumbnailCoordinator.cancelAll() }
         onViewModeChange?(mode)
     }
 
@@ -224,25 +218,7 @@ final class ExplorerTabController: NSViewController {
     }
 
     func handleOperationEvent(_ event: FileOperationQueueEvent) {
-        switch event {
-        case let .progress(progress) where pendingOperationIDs.contains(progress.id):
-            let detail = progress.progress.currentItem?.lastPathComponent ?? "item"
-            browser.showStatus("\(progress.progress.kind.rawValue): \(progress.progress.completedItems) of \(progress.progress.totalItems) — \(detail)")
-        case let .stateChanged(snapshot) where pendingOperationIDs.contains(snapshot.id):
-            switch snapshot.state {
-            case .queued:
-                browser.showStatus("\(snapshot.operation.kind.rawValue) queued.")
-            case .running:
-                browser.showStatus("\(snapshot.operation.kind.rawValue) in progress…")
-            case .completed, .failed, .cancelled:
-                // `submit(_:)` awaits this operation's result as a reliable
-                // completion path even if its first stream event arrived
-                // before the tab registered the operation ID.
-                break
-            }
-        default:
-            break
-        }
+        operationCoordinator.handle(event)
     }
 
     func perform(_ command: BrowserNavigationCommand) {
@@ -264,6 +240,22 @@ final class ExplorerTabController: NSViewController {
     }
 
     private func configureCallbacks() {
+        operationCoordinator.onStatus = { [weak self] message in
+            self?.browser.showStatus(message)
+        }
+        operationCoordinator.onCompleted = { [weak self] operation, result in
+            self?.onOperationCompleted?(operation, result)
+        }
+        operationCoordinator.onRefresh = { [weak self] in self?.perform(.refresh) }
+        searchCoordinator.onResults = { [weak self] items, query, isComplete in
+            self?.displaySearchResults(items, query: query, isComplete: isComplete)
+        }
+        searchCoordinator.onFailure = { [weak self] error in
+            self?.browser.showStatus(error.localizedDescription)
+        }
+        thumbnailCoordinator.onThumbnail = { [weak self] thumbnail, url in
+            self?.browser.displayThumbnail(thumbnail.data, for: url)
+        }
         browser.onNavigationCommand = { [weak self] command in self?.perform(command) }
         browser.onViewModeSelection = { [weak self] mode in self?.setViewMode(mode) }
         browser.onSortSelection = { [weak self] descriptor in self?.setSortDescriptor(descriptor) }
@@ -299,8 +291,16 @@ final class ExplorerTabController: NSViewController {
         browser.onSidebarWidthChange = { [weak self] width in self?.onSidebarWidthChange?(width) }
         browser.onSearchQueryChange = { [weak self] query in self?.filterCurrentDirectory(matching: query) }
         browser.onSearchClear = { [weak self] in self?.restoreUnfilteredSnapshot() }
-        browser.onThumbnailRequest = { [weak self] url in self?.requestThumbnail(for: url) }
-        browser.onThumbnailCancellation = { [weak self] url in self?.cancelThumbnail(for: url) }
+        browser.onThumbnailRequest = { [weak self] url in
+            guard let self else { return }
+            self.thumbnailCoordinator.request(
+                url,
+                scale: Double(NSScreen.main?.backingScaleFactor ?? 2)
+            )
+        }
+        browser.onThumbnailCancellation = { [weak self] url in
+            self?.thumbnailCoordinator.cancel(url)
+        }
         browser.onFileCommand = { [weak self] command in self?.performFileCommand(command) }
         browser.canPerformFileCommand = { [weak self] command in self?.canPerformFileCommand(command) ?? false }
         browser.onFileURLDrop = { [weak self] drop in self?.accept(drop) ?? false }
@@ -339,12 +339,12 @@ final class ExplorerTabController: NSViewController {
 
     private func requestDirectory(_ url: URL, origin: NavigationOrigin) {
         let destination = url.standardizedFileURL
-        cancelThumbnailRequests()
+        thumbnailCoordinator.cancelAll()
         loadGeneration &+= 1
         let generation = loadGeneration
         loadTask?.cancel()
         if origin != .refresh { stopMonitoring() }
-        cancelSearch()
+        searchCoordinator.cancel()
         browser.clearSearchField()
         browser.showStatus("Loading \(destination.path)…")
         let loader = directoryLoader
@@ -444,35 +444,11 @@ final class ExplorerTabController: NSViewController {
             browser.showStatus("Wait for the folder to finish loading before searching.")
             return
         }
-        searchGeneration &+= 1
-        let generation = searchGeneration
-        searchTask?.cancel()
-        let service = searchService
-        let query = SearchQuery(text: text, includesHiddenFiles: showsHiddenFiles)
-        let root = currentSnapshot.directoryURL
-        searchTask = Task { [weak self] in
-            do {
-                let immediate = try await service.filter(currentSnapshot, matching: query)
-                guard !Task.isCancelled, let self, generation == self.searchGeneration,
-                      self.currentSnapshot?.directoryURL == root else { return }
-                self.displaySearchResults(immediate, query: text, isComplete: immediate.count >= query.maximumResults)
-
-                guard immediate.count < query.maximumResults else { return }
-                let subtree = try await service.searchSubtree(at: root, matching: query)
-                guard !Task.isCancelled, generation == self.searchGeneration,
-                      self.currentSnapshot?.directoryURL == root else { return }
-                self.displaySearchResults(
-                    Self.mergeSearchResults(immediate, subtree),
-                    query: text,
-                    isComplete: true
-                )
-            } catch is CancellationError {
-            } catch SearchServiceError.cancelled {
-            } catch {
-                guard !Task.isCancelled, let self, generation == self.searchGeneration else { return }
-                self.browser.showStatus(error.localizedDescription)
-            }
-        }
+        searchCoordinator.search(
+            snapshot: currentSnapshot,
+            text: text,
+            includesHiddenFiles: showsHiddenFiles
+        )
     }
 
     private func displaySearchResults(_ items: [FileItem], query: String, isComplete: Bool) {
@@ -486,76 +462,13 @@ final class ExplorerTabController: NSViewController {
         }
     }
 
-    private static func mergeSearchResults(_ immediate: [FileItem], _ subtree: [FileItem]) -> [FileItem] {
-        var seen = Set(immediate.map { $0.url.standardizedFileURL })
-        var merged = immediate
-        for item in subtree {
-            if seen.insert(item.url.standardizedFileURL).inserted {
-                merged.append(item)
-            }
-        }
-        return merged.sorted { lhs, rhs in
-            let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
-            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
-            return lhs.url.absoluteString < rhs.url.absoluteString
-        }
-    }
-
     private func restoreUnfilteredSnapshot() {
-        cancelSearch()
+        searchCoordinator.cancel()
         guard let currentSnapshot else { return }
         selection.formIntersection(Set(currentSnapshot.items.map(\.url)))
         browser.displayRows(currentSnapshot.items.map(BrowserFileRow.init), selecting: selection)
         let label = "\(currentSnapshot.items.count) \(currentSnapshot.items.count == 1 ? "item" : "items")"
         browser.showStatus(label)
-    }
-
-    private func cancelSearch() {
-        searchGeneration &+= 1
-        searchTask?.cancel()
-        searchTask = nil
-    }
-
-    private func requestThumbnail(for url: URL) {
-        let target = url.standardizedFileURL
-        guard thumbnailTasks[target] == nil else { return }
-        let service = thumbnailService
-        let requestID = UUID()
-        thumbnailRequestIDs[target] = requestID
-        thumbnailTasks[target] = Task { [weak self] in
-            defer {
-                if self?.thumbnailRequestIDs[target] == requestID {
-                    self?.thumbnailTasks[target] = nil
-                    self?.thumbnailRequestIDs[target] = nil
-                }
-            }
-            do {
-                let thumbnail = try await service.thumbnail(for: ThumbnailRequest(
-                    url: target,
-                    maximumPixelSize: 160,
-                    scale: Double(NSScreen.main?.backingScaleFactor ?? 2)
-                ))
-                guard !Task.isCancelled, let self else { return }
-                self.browser.displayThumbnail(thumbnail.data, for: target)
-            } catch is CancellationError {
-            } catch ThumbnailServiceError.cancelled {
-            } catch {
-                // The collection item keeps its system icon when Quick Look
-                // cannot produce a representation for this file.
-            }
-        }
-    }
-
-    private func cancelThumbnail(for url: URL) {
-        let target = url.standardizedFileURL
-        thumbnailRequestIDs[target] = nil
-        thumbnailTasks.removeValue(forKey: target)?.cancel()
-    }
-
-    private func cancelThumbnailRequests() {
-        thumbnailTasks.values.forEach { $0.cancel() }
-        thumbnailTasks.removeAll()
-        thumbnailRequestIDs.removeAll()
     }
 
     private var directoryLoadOptions: DirectoryLoadOptions {
@@ -634,35 +547,12 @@ final class ExplorerTabController: NSViewController {
         completion: ((FileOperationResult) -> Void)? = nil,
         finished: (() -> Void)? = nil
     ) {
-        let queue = operationQueue
-        let resolver: (any FileConflictResolving)? = operation.conflictPolicy == .ask
-            ? FileConflictCoordinator(window: view.window)
-            : nil
-        Task { [weak self] in
-            defer { finished?() }
-            let id = await queue.submit(operation, conflictResolver: resolver)
-            guard let self else { return }
-            self.pendingOperationIDs.insert(id)
-            self.browser.showStatus("\(operation.kind.rawValue) queued.")
-            do {
-                let result = try await queue.result(for: id)
-                guard self.pendingOperationIDs.remove(id) != nil else { return }
-                self.onOperationCompleted?(operation, result)
-                completion?(result)
-                self.browser.showStatus(Self.completionStatus(for: operation.kind, result: result))
-                self.perform(.refresh)
-            } catch {
-                guard self.pendingOperationIDs.remove(id) != nil else { return }
-                self.browser.showStatus(error.localizedDescription)
-            }
-        }
-    }
-
-    private static func completionStatus(for kind: FileOperationKind, result: FileOperationResult) -> String {
-        if result.skippedItems > 0 {
-            return "\(kind.rawValue) completed (\(result.completedItems) completed, \(result.skippedItems) skipped)."
-        }
-        return "\(kind.rawValue) completed."
+        operationCoordinator.submit(
+            operation,
+            window: view.window,
+            completion: completion,
+            finished: finished
+        )
     }
 
     private func accept(_ drop: BrowserFileDrop) -> Bool {
@@ -729,59 +619,27 @@ final class ExplorerTabController: NSViewController {
     }
 
     func closeQuickLook() {
-        guard QLPreviewPanel.sharedPreviewPanelExists() else { return }
-        guard let panel = QLPreviewPanel.shared() else { return }
-        guard panel.currentController as? ExplorerTabController === self else { return }
-        panel.orderOut(nil)
+        quickLookCoordinator.close()
     }
 
     func updateQuickLookSelection() {
-        previewURLs = selection.sorted { $0.path < $1.path }
-        guard QLPreviewPanel.sharedPreviewPanelExists() else { return }
-        guard let panel = QLPreviewPanel.shared() else { return }
-        guard panel.currentController as? ExplorerTabController === self else { return }
-        guard !previewURLs.isEmpty else { panel.orderOut(nil); return }
-        panel.reloadData()
+        quickLookCoordinator.updateSelection(selection)
     }
 
     private func toggleQuickLook() {
-        previewURLs = selection.sorted { $0.path < $1.path }
-        guard !previewURLs.isEmpty else { return }
-        guard let panel = QLPreviewPanel.shared() else { return }
-        panel.updateController()
-        guard panel.currentController as? ExplorerTabController === self else { return }
-        panel.dataSource = self
-        panel.delegate = self
-        panel.reloadData()
-        if panel.isVisible {
-            panel.orderOut(nil)
-        } else {
-            panel.makeKeyAndOrderFront(nil)
-        }
+        quickLookCoordinator.toggle(selection: selection)
     }
 
 }
 
-extension ExplorerTabController: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
-    nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        MainActor.assumeIsolated { previewURLs.count }
-    }
-
-    nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
-        MainActor.assumeIsolated {
-            previewURLs.indices.contains(index) ? previewURLs[index] as NSURL : nil
-        }
-    }
-
+extension ExplorerTabController {
     nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
         MainActor.assumeIsolated { !selection.isEmpty }
     }
 
     nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
         MainActor.assumeIsolated {
-            previewURLs = selection.sorted { $0.path < $1.path }
-            panel.dataSource = self
-            panel.delegate = self
+            quickLookCoordinator.beginControl(panel, selection: selection)
         }
     }
 

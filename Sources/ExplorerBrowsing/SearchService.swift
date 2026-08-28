@@ -7,7 +7,6 @@ import ExplorerCore
 /// available. ``searchSubtree(at:matching:)`` falls back to recursive
 /// enumeration for unindexed volumes and Spotlight failures.
 public enum SearchStrategy: String, Sendable, Codable, Hashable {
-    case immediateDirectory
     case recursiveFileSystem
     case spotlight
 }
@@ -38,7 +37,6 @@ public enum SearchServiceError: Error, Sendable, Equatable, LocalizedError {
     case rootIsNotDirectory(URL)
     case symbolicLinkRootNotSupported(URL)
     case unavailable(URL, code: Int)
-    case unsupportedStrategy(SearchStrategy)
 
     public var errorDescription: String? {
         switch self {
@@ -54,8 +52,6 @@ public enum SearchServiceError: Error, Sendable, Equatable, LocalizedError {
             return "Search does not follow symbolic-link roots: \(url.path)"
         case let .unavailable(url, code):
             return "Cannot search \(url.path) (error \(code))."
-        case let .unsupportedStrategy(strategy):
-            return "Unsupported search strategy: \(strategy.rawValue)"
         }
     }
 }
@@ -175,8 +171,6 @@ public actor SearchService {
             return try searchRecursively(at: root, matching: query)
         case .spotlight:
             return try await searchWithSpotlight(at: root, matching: query)
-        case .immediateDirectory:
-            throw SearchServiceError.unsupportedStrategy(strategy)
         }
     }
 }

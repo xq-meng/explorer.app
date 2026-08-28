@@ -110,9 +110,55 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         controller.onSortSelection = { received = $0 }
         let previous = table.sortDescriptors
         table.sortDescriptors = [NSSortDescriptor(key: "size", ascending: false)]
-        controller.tableView(table, sortDescriptorsDidChange: previous)
+        (table.delegate as? BrowserFileContentController)?
+            .tableView(table, sortDescriptorsDidChange: previous)
 
         XCTAssertEqual(received, BrowserSortDescriptor(field: .size, ascending: false))
+    }
+
+    func testFileSelectionRoutesThroughBrowserAndSurvivesViewModeChange() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        let firstURL = URL(fileURLWithPath: "/tmp/first.txt")
+        let secondURL = URL(fileURLWithPath: "/tmp/second.txt")
+        controller.displayRows([
+            BrowserFileRow(
+                url: firstURL,
+                name: "first.txt",
+                modifiedDate: "Today",
+                size: "1 KB",
+                kind: "Text",
+                isNavigable: false
+            ),
+            BrowserFileRow(
+                url: secondURL,
+                name: "second.txt",
+                modifiedDate: "Today",
+                size: "2 KB",
+                kind: "Text",
+                isNavigable: false
+            ),
+        ], selecting: [secondURL])
+
+        guard let table = allDescendants(of: controller.view, as: NSTableView.self)
+            .first(where: { !($0 is NSOutlineView) }),
+              let collection = allDescendants(of: controller.view, as: NSCollectionView.self).first,
+              let contentController = table.delegate as? BrowserFileContentController else {
+            return XCTFail("Expected both folder content presentations")
+        }
+        XCTAssertEqual(table.selectedRowIndexes, IndexSet(integer: 1))
+        XCTAssertEqual(collection.selectionIndexes, IndexSet(integer: 1))
+
+        var selectedURLs: Set<URL> = []
+        controller.onSelectionChange = { selectedURLs = $0 }
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        contentController.tableViewSelectionDidChange(
+            Notification(name: NSTableView.selectionDidChangeNotification, object: table)
+        )
+        XCTAssertEqual(selectedURLs, [firstURL.standardizedFileURL])
+
+        controller.setViewMode(.icons)
+        XCTAssertEqual(collection.selectionIndexes, IndexSet(integer: 0))
     }
 
     func testConflictAlertUsesSafeDefaultAndApplyToAll() {

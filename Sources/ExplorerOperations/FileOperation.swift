@@ -124,11 +124,6 @@ public enum FileOperation: Codable, Equatable, Sendable {
         .duplicate(DuplicateRequest(source: source, destination: destination, conflictPolicy: conflictPolicy))
     }
 
-    public static func duplicate(source: URL, destination: URL,
-                                 conflictPolicy: FileConflictPolicy = .fail) -> Self {
-        .duplicate(DuplicateRequest(source: source, destination: destination, conflictPolicy: conflictPolicy))
-    }
-
     public static func trash(sources: [URL]) -> Self {
         .trash(TrashRequest(sources: sources))
     }
@@ -253,7 +248,6 @@ public enum FileOperationError: Error, Codable, Equatable, Sendable, LocalizedEr
     case destinationMissing(URL)
     case destinationNotDirectory(URL)
     case destinationExists(URL)
-    case conflict(URL)
     case invalidName(String)
     case sameSourceAndDestination(URL)
     case cancelled
@@ -268,7 +262,6 @@ public enum FileOperationError: Error, Codable, Equatable, Sendable, LocalizedEr
         case .destinationMissing(let url): return "Destination does not exist: \(url.path)"
         case .destinationNotDirectory(let url): return "Destination is not a directory: \(url.path)"
         case .destinationExists(let url): return "Destination already exists: \(url.path)"
-        case .conflict(let url): return "Destination conflict: \(url.path)"
         case .invalidName(let name): return "Invalid file name: \(name)"
         case .sameSourceAndDestination(let url): return "Source and destination are the same: \(url.path)"
         case .cancelled: return "Operation cancelled"

@@ -25,11 +25,6 @@ public struct ThumbnailImage: Sendable, Hashable {
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
     }
-
-    @MainActor
-    public func makeNSImage() -> NSImage? {
-        NSImage(data: data)
-    }
 }
 
 public enum ThumbnailFallbackPolicy: String, Sendable, Codable, Hashable {

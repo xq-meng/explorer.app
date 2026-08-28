@@ -15,7 +15,7 @@
 
 当前代码以“可构建、测试通过的开发原型”为目标；尚未达到本文定义的 Beta 退出条件。
 
-`v0.3.0` 基线验证：Swift 6 Debug、Release 与自动发布构建通过；63 项 XCTest 覆盖窗口内容布局与白屏回归、懒加载目录树、目录读取与取消、稳定文件 ID、Spotlight 与递归搜索、变化监听、挂载卷、剪贴板、file promise 拖放类型与文件 URL 优先级，以及文件操作的字节进度、批量冲突、回滚、Undo/Redo 往返、队列取消和符号链接边界安全。
+`v0.4.0` 基线验证：Swift 6 Debug 与 Release 构建通过；64 项 XCTest 覆盖窗口内容布局与白屏回归、视图切换后的选择保持、懒加载目录树、目录读取与取消、稳定文件 ID、Spotlight 与递归搜索、变化监听、挂载卷、剪贴板、file promise 拖放类型与文件 URL 优先级，以及文件操作的字节进度、批量冲突、回滚、Undo/Redo 往返、队列取消和符号链接边界安全。浏览控制器已按文件内容、搜索、缩略图、操作与 Quick Look 职责拆分，并移除上一版本保留的废弃兼容 API。
 
 界面产品研究参考：[ronhash10/MacExplorer](https://github.com/ronhash10/MacExplorer)（MIT）。当前工程借鉴其目录树、面包屑和预览窗格的产品模式，但继续使用独立的 AppKit 视图与 actor 服务层实现。
 

@@ -174,10 +174,6 @@ public actor MountedVolumeService {
         return volumes
     }
 
-    public func load() async throws -> [MountedVolumeMetadata] {
-        try await mountedVolumes()
-    }
-
     private func metadata(for url: URL, values: MountedVolumeResourceValues) -> MountedVolumeMetadata {
         let displayName = values.volumeName.flatMap { $0.isEmpty ? nil : $0 }
             ?? fallbackName(for: url)
