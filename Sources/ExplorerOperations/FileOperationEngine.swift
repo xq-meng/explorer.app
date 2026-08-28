@@ -111,6 +111,7 @@ public actor FileOperationEngine {
                         asyncProgress: (@Sendable (FileOperationProgress) async -> Void)? = nil) async throws -> FileOperationResult {
         let operationID = UUID()
         await acquireExecutionSlot()
+        defer { releaseExecutionSlot() }
         do {
             try checkCancellation()
             let result = try await run(
@@ -120,14 +121,9 @@ public actor FileOperationEngine {
                 progress: asyncProgress
             )
             try checkCancellation()
-            releaseExecutionSlot()
             return result
         } catch is CancellationError {
-            releaseExecutionSlot()
             throw FileOperationError.cancelled
-        } catch {
-            releaseExecutionSlot()
-            throw error
         }
     }
 
@@ -245,9 +241,7 @@ public actor FileOperationEngine {
             if requested.standardizedFileURL == source.standardizedFileURL {
                 throw FileOperationError.sameSourceAndDestination(source)
             }
-            if kind == .copy || kind == .move {
-                try validateNotInside(source: source, destination: requested)
-            }
+            try validateNotInside(source: source, destination: requested)
             let itemBytes = fileManager.byteCount(of: source)
             await report(
                 progress,
@@ -257,8 +251,7 @@ public actor FileOperationEngine {
                 total: request.sources.count,
                 item: source,
                 completedBytes: completedBytes,
-                totalBytes: totalBytes,
-                force: true
+                totalBytes: totalBytes
             )
             let destination = try await resolveConflict(
                 at: requested,
@@ -286,8 +279,7 @@ public actor FileOperationEngine {
                     total: request.sources.count,
                     item: source,
                     completedBytes: completedBytes,
-                    totalBytes: totalBytes,
-                    force: true
+                    totalBytes: totalBytes
                 )
                 return FileOperationResult(operationID: operationID, kind: kind, items: results)
             case .skip:
@@ -348,8 +340,7 @@ public actor FileOperationEngine {
                 total: request.sources.count,
                 item: source,
                 completedBytes: completedBytes,
-                totalBytes: totalBytes,
-                force: true
+                totalBytes: totalBytes
             )
             // Yield after every item so cancellation can be observed even
             // when FileManager itself performs a fast operation.
@@ -419,8 +410,7 @@ public actor FileOperationEngine {
                 total: 1,
                 item: request.source,
                 completedBytes: totalBytes,
-                totalBytes: totalBytes,
-                force: true
+                totalBytes: totalBytes
             )
             return FileOperationResult(operationID: operationID, kind: .duplicate,
                                        items: [.init(source: request.source, destination: url, status: .completed, replacedExisting: shouldReplace)])
@@ -581,7 +571,7 @@ public actor FileOperationEngine {
     ) async throws {
         do {
             try await fileManager.copyItemWithProgress(at: source, to: destination) { copied in
-                guard throttler.shouldReport(force: false) else { return }
+                guard throttler.shouldReport() else { return }
                 await self.report(
                     progress,
                     id: operationID,
@@ -590,8 +580,7 @@ public actor FileOperationEngine {
                     total: totalItems,
                     item: source,
                     completedBytes: baseBytes + copied,
-                    totalBytes: totalBytes,
-                    force: true
+                    totalBytes: totalBytes
                 )
             }
         } catch {
@@ -666,10 +655,9 @@ public actor FileOperationEngine {
         total: Int,
         item: URL,
         completedBytes: Int64 = 0,
-        totalBytes: Int64? = nil,
-        force: Bool = true
+        totalBytes: Int64? = nil
     ) async {
-        guard let progress, force else { return }
+        guard let progress else { return }
         await progress(FileOperationProgress(
             operationID: id,
             kind: kind,

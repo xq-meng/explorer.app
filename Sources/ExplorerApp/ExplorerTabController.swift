@@ -639,31 +639,21 @@ final class ExplorerTabController: NSViewController {
             ? FileConflictCoordinator(window: view.window)
             : nil
         Task { [weak self] in
+            defer { finished?() }
             let id = await queue.submit(operation, conflictResolver: resolver)
-            guard let self else {
-                finished?()
-                return
-            }
+            guard let self else { return }
             self.pendingOperationIDs.insert(id)
             self.browser.showStatus("\(operation.kind.rawValue) queued.")
             do {
                 let result = try await queue.result(for: id)
-                guard self.pendingOperationIDs.remove(id) != nil else {
-                    finished?()
-                    return
-                }
+                guard self.pendingOperationIDs.remove(id) != nil else { return }
                 self.onOperationCompleted?(operation, result)
                 completion?(result)
                 self.browser.showStatus(Self.completionStatus(for: operation.kind, result: result))
                 self.perform(.refresh)
-                finished?()
             } catch {
-                guard self.pendingOperationIDs.remove(id) != nil else {
-                    finished?()
-                    return
-                }
+                guard self.pendingOperationIDs.remove(id) != nil else { return }
                 self.browser.showStatus(error.localizedDescription)
-                finished?()
             }
         }
     }

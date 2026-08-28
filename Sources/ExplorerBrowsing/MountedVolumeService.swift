@@ -179,10 +179,12 @@ public actor MountedVolumeService {
     }
 
     private func metadata(for url: URL, values: MountedVolumeResourceValues) -> MountedVolumeMetadata {
-        MountedVolumeMetadata(
+        let displayName = values.volumeName.flatMap { $0.isEmpty ? nil : $0 }
+            ?? fallbackName(for: url)
+        return MountedVolumeMetadata(
             id: values.volumeUUIDString ?? url.absoluteString,
             url: url,
-            displayName: values.volumeName?.isEmpty == false ? values.volumeName! : fallbackName(for: url),
+            displayName: displayName,
             isLocal: values.volumeIsLocal ?? true,
             isRemovable: values.volumeIsRemovable ?? false,
             isEjectable: values.volumeIsEjectable ?? false,

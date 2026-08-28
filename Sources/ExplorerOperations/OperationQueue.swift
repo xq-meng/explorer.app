@@ -188,7 +188,7 @@ public actor FileOperationQueue {
         let state: FileOperationQueueState
         let description: String?
         if let error {
-            state = (error is FileOperationError && (error as? FileOperationError) == .cancelled) ? .cancelled : .failed
+            state = (error as? FileOperationError) == .cancelled ? .cancelled : .failed
             description = error.localizedDescription
         } else {
             state = .completed

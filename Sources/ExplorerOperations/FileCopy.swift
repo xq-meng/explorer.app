@@ -38,13 +38,9 @@ final class ProgressThrottler: @unchecked Sendable {
     private let lock = NSLock()
     private var lastReport = ContinuousClock.now.advanced(by: .seconds(-1))
 
-    func shouldReport(force: Bool) -> Bool {
+    func shouldReport() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if force {
-            lastReport = .now
-            return true
-        }
         let now = ContinuousClock.now
         guard now - lastReport >= Duration.milliseconds(80) else { return false }
         lastReport = now

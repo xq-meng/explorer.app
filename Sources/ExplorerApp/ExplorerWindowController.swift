@@ -29,7 +29,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     init() {
         let defaultFrame = NSRect(x: 0, y: 0, width: 1280, height: 760)
         let storedFrame = settings.windowFrame
-        let frame = (storedFrame?.width ?? 0) >= 900 && (storedFrame?.height ?? 0) >= 560 ? storedFrame! : defaultFrame
+        let frame: NSRect
+        if let storedFrame, storedFrame.width >= 900, storedFrame.height >= 560 {
+            frame = storedFrame
+        } else {
+            frame = defaultFrame
+        }
         let window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Explorer"
         window.titleVisibility = .hidden

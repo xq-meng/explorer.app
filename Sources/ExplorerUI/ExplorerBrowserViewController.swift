@@ -148,9 +148,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     }
 
     public func setViewMode(_ mode: BrowserViewMode) {
-        let selectedIndexes = viewMode == .details
-            ? fileTableView.selectedRowIndexes
-            : collectionView.selectionIndexes
+        let selectedIndexes = selectedItemIndexes
         viewMode = mode
         viewModeControl.selectedSegment = mode == .icons ? 1 : 0
         fileTableView.selectRowIndexes(selectedIndexes, byExtendingSelection: false)
@@ -555,7 +553,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     }
 
     private func reportSelection() {
-        let indexes = viewMode == .details ? fileTableView.selectedRowIndexes : collectionView.selectionIndexes
+        let indexes = selectedItemIndexes
         if viewMode == .details {
             collectionView.selectionIndexes = indexes
         } else {
@@ -569,7 +567,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     }
 
     private func refreshSelectionPresentation() {
-        let indexes = viewMode == .details ? fileTableView.selectedRowIndexes : collectionView.selectionIndexes
+        let indexes = selectedItemIndexes
         let selectedRows = indexes.compactMap { index in
             fileRows.indices.contains(index) ? fileRows[index].browserRow : nil
         }
@@ -584,6 +582,10 @@ public final class ExplorerBrowserViewController: NSViewController {
             }
         }
         statusSummaryLabel.stringValue = components.joined(separator: "  ·  ")
+    }
+
+    private var selectedItemIndexes: IndexSet {
+        viewMode == .details ? fileTableView.selectedRowIndexes : collectionView.selectionIndexes
     }
 
     @objc private func openSelectedFileRow(_ sender: Any?) {

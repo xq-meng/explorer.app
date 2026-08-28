@@ -2,13 +2,13 @@ import AppKit
 import ExplorerOperations
 import ExplorerUI
 
-final class FileConflictCoordinator: FileConflictResolving, @unchecked Sendable {
+actor FileConflictCoordinator: FileConflictResolving {
     private var appliedToAll: FileConflictResolution?
-    @MainActor private weak var window: NSWindow?
+    private let presenter: FileConflictPresenter
 
     @MainActor
     init(window: NSWindow?) {
-        self.window = window
+        presenter = FileConflictPresenter(window: window)
     }
 
     func resolve(_ conflict: FileConflict) async -> FileConflictResolution {
@@ -21,8 +21,7 @@ final class FileConflictCoordinator: FileConflictResolving, @unchecked Sendable 
             operationTitle: operationTitle(for: conflict.kind),
             remainingItemCount: conflict.remainingItemCount
         )
-        let window = await MainActor.run { self.window }
-        let decision = await BrowserConflictAlert.present(prompt: prompt, in: window)
+        let decision = await presenter.present(prompt)
         let resolution = FileConflictResolution(decision.choice)
         if decision.applyToAll {
             appliedToAll = resolution
@@ -44,6 +43,21 @@ final class FileConflictCoordinator: FileConflictResolving, @unchecked Sendable 
         case .duplicate: "Duplicate"
         case .trash: "Move to Trash"
         }
+    }
+}
+
+@MainActor
+private final class FileConflictPresenter {
+    // AppKit ownership remains on the main actor; the coordinator actor owns
+    // only the cross-item conflict decision state.
+    private weak var window: NSWindow?
+
+    init(window: NSWindow?) {
+        self.window = window
+    }
+
+    func present(_ prompt: BrowserConflictPrompt) async -> BrowserConflictDecision {
+        await BrowserConflictAlert.present(prompt: prompt, in: window)
     }
 }
 
