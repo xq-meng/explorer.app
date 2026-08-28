@@ -279,7 +279,7 @@ final class ExplorerTabController: NSViewController {
         browser.onRemoveSidebarFavorite = { [weak self] url in self?.onRemoveFavorite?(url) }
         browser.onOpenFileRow = { [weak self] row in self?.open(row) }
         browser.onRenameSubmission = { [weak self] source, name in
-            self?.submit(.rename(source: source, name: name, conflictPolicy: .fail)) { [weak self] result in
+            self?.submit(.rename(source: source, name: name, conflictPolicy: .ask)) { [weak self] result in
                 guard let destination = result.items.first(where: { $0.status == .completed })?.destination else { return }
                 self?.selection = [destination]
             }
@@ -579,17 +579,20 @@ final class ExplorerTabController: NSViewController {
         let operation: FileOperation
         switch contents.intent {
         case .copy:
-            operation = .copy(sources: contents.urls, to: currentDirectoryURL, conflictPolicy: .fail)
+            operation = .copy(sources: contents.urls, to: currentDirectoryURL, conflictPolicy: .ask)
         case .cut:
-            operation = .move(sources: contents.urls, to: currentDirectoryURL, conflictPolicy: .fail)
+            operation = .move(sources: contents.urls, to: currentDirectoryURL, conflictPolicy: .ask)
         }
         submit(operation)
     }
 
     private func submit(_ operation: FileOperation, completion: ((FileOperationResult) -> Void)? = nil) {
         let queue = operationQueue
+        let resolver: (any FileConflictResolving)? = operation.conflictPolicy == .ask
+            ? FileConflictCoordinator(window: view.window)
+            : nil
         Task { [weak self] in
-            let id = await queue.submit(operation)
+            let id = await queue.submit(operation, conflictResolver: resolver)
             guard let self else { return }
             self.pendingOperationIDs.insert(id)
             self.browser.showStatus("\(operation.kind.rawValue) queued.")
@@ -598,13 +601,20 @@ final class ExplorerTabController: NSViewController {
                 guard self.pendingOperationIDs.remove(id) != nil else { return }
                 self.onOperationCompleted?(operation, result)
                 completion?(result)
-                self.browser.showStatus("\(operation.kind.rawValue) completed.")
+                self.browser.showStatus(Self.completionStatus(for: operation.kind, result: result))
                 self.perform(.refresh)
             } catch {
                 guard self.pendingOperationIDs.remove(id) != nil else { return }
                 self.browser.showStatus(error.localizedDescription)
             }
         }
+    }
+
+    private static func completionStatus(for kind: FileOperationKind, result: FileOperationResult) -> String {
+        if result.skippedItems > 0 {
+            return "\(kind.rawValue) completed (\(result.completedItems) completed, \(result.skippedItems) skipped)."
+        }
+        return "\(kind.rawValue) completed."
     }
 
     private func accept(_ drop: BrowserFileDrop) -> Bool {
@@ -620,9 +630,9 @@ final class ExplorerTabController: NSViewController {
         let operation: FileOperation
         switch drop.intent {
         case .copy:
-            operation = .copy(sources: drop.urls, to: destination, conflictPolicy: .fail)
+            operation = .copy(sources: drop.urls, to: destination, conflictPolicy: .ask)
         case .move:
-            operation = .move(sources: drop.urls, to: destination, conflictPolicy: .fail)
+            operation = .move(sources: drop.urls, to: destination, conflictPolicy: .ask)
         }
         submit(operation)
         return true

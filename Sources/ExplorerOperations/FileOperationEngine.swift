@@ -12,6 +12,26 @@ public protocol FileManagerClient: Sendable {
     func removeItem(at URL: URL) throws
     func trashItem(at url: URL, resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws
     func volumeIdentifier(for url: URL) throws -> String?
+    func copyItemWithProgress(
+        at srcURL: URL,
+        to dstURL: URL,
+        onBytesCopied: @escaping @Sendable (Int64) async -> Void
+    ) async throws
+    func byteCount(of url: URL) -> Int64
+}
+
+public extension FileManagerClient {
+    func copyItemWithProgress(
+        at srcURL: URL,
+        to dstURL: URL,
+        onBytesCopied: @escaping @Sendable (Int64) async -> Void
+    ) async throws {
+        try copyItem(at: srcURL, to: dstURL)
+    }
+
+    func byteCount(of url: URL) -> Int64 {
+        FileByteCounter.allocatedBytes(at: url)
+    }
 }
 
 /// Production implementation of ``FileManagerClient``.
@@ -54,6 +74,18 @@ public struct LocalFileManagerClient: FileManagerClient, @unchecked Sendable {
         if let identifier = values.volumeIdentifier { return String(describing: identifier) }
         return nil
     }
+
+    public func copyItemWithProgress(
+        at srcURL: URL,
+        to dstURL: URL,
+        onBytesCopied: @escaping @Sendable (Int64) async -> Void
+    ) async throws {
+        try await CopyfileOperation.copy(from: srcURL, to: dstURL, onBytesCopied: onBytesCopied)
+    }
+
+    public func byteCount(of url: URL) -> Int64 {
+        FileByteCounter.allocatedBytes(at: url)
+    }
 }
 
 /// An actor that serializes mutations and checks cancellation between items.
@@ -67,19 +99,26 @@ public actor FileOperationEngine {
     }
 
     public func execute(_ operation: FileOperation,
+                        conflictResolver: (any FileConflictResolving)? = nil,
                         progress: (@Sendable (FileOperationProgress) -> Void)? = nil) async throws -> FileOperationResult {
-        try await execute(operation, asyncProgress: { value in progress?(value) })
+        try await execute(operation, conflictResolver: conflictResolver, asyncProgress: { value in progress?(value) })
     }
 
     /// Async progress is useful to clients that need to cancel or update UI
     /// state at an item boundary.
     public func execute(_ operation: FileOperation,
+                        conflictResolver: (any FileConflictResolving)? = nil,
                         asyncProgress: (@Sendable (FileOperationProgress) async -> Void)? = nil) async throws -> FileOperationResult {
         let operationID = UUID()
         await acquireExecutionSlot()
         do {
             try checkCancellation()
-            let result = try await run(operation, operationID: operationID, progress: asyncProgress)
+            let result = try await run(
+                operation,
+                operationID: operationID,
+                conflictResolver: conflictResolver,
+                progress: asyncProgress
+            )
             try checkCancellation()
             releaseExecutionSlot()
             return result
@@ -93,47 +132,65 @@ public actor FileOperationEngine {
     }
 
     private func run(_ operation: FileOperation, operationID: UUID,
+                     conflictResolver: (any FileConflictResolving)?,
                      progress: (@Sendable (FileOperationProgress) async -> Void)?) async throws -> FileOperationResult {
         switch operation {
         case .createFolder(let request):
-            return try await runCreateFolder(request, operationID: operationID, progress: progress)
+            return try await runCreateFolder(request, operationID: operationID, conflictResolver: conflictResolver, progress: progress)
         case .rename(let request):
-            return try await runRename(request, operationID: operationID, progress: progress)
+            return try await runRename(request, operationID: operationID, conflictResolver: conflictResolver, progress: progress)
         case .copy(let request):
-            return try await runBatch(request, kind: .copy, operationID: operationID, progress: progress)
+            return try await runBatch(request, kind: .copy, operationID: operationID, conflictResolver: conflictResolver, progress: progress)
         case .move(let request):
-            return try await runBatch(request, kind: .move, operationID: operationID, progress: progress)
+            return try await runBatch(request, kind: .move, operationID: operationID, conflictResolver: conflictResolver, progress: progress)
         case .duplicate(let request):
-            return try await runDuplicate(request, operationID: operationID, progress: progress)
+            return try await runDuplicate(request, operationID: operationID, conflictResolver: conflictResolver, progress: progress)
         case .trash(let request):
             return try await runTrash(request, operationID: operationID, progress: progress)
         }
     }
 
-    private func runCreateFolder(_ request: CreateFolderRequest, operationID: UUID,
-                                 progress: (@Sendable (FileOperationProgress) async -> Void)?) async throws -> FileOperationResult {
+    private func runCreateFolder(
+        _ request: CreateFolderRequest,
+        operationID: UUID,
+        conflictResolver: (any FileConflictResolving)?,
+        progress: (@Sendable (FileOperationProgress) async -> Void)?
+    ) async throws -> FileOperationResult {
         try validateName(request.name)
         try validateDirectory(request.parent, missingError: .destinationMissing(request.parent))
         let requested = request.parent.appendingPathComponent(request.name, isDirectory: true)
-        let destination = try resolveConflict(at: requested, policy: request.conflictPolicy)
-        if destination.wasSkipped {
+        let destination = try await resolveConflict(
+            at: requested,
+            source: requested,
+            kind: .createFolder,
+            remainingItemCount: 0,
+            policy: request.conflictPolicy,
+            resolver: conflictResolver
+        )
+        switch destination {
+        case .skip, .stop:
             await report(progress, id: operationID, kind: .createFolder, completed: 1, total: 1, item: requested)
             return FileOperationResult(operationID: operationID, kind: .createFolder,
                                        items: [.init(source: requested, destination: requested, status: .skipped)])
+        case let .proceed(url, shouldReplace):
+            try checkCancellation()
+            do {
+                try await withReplacementBackup(at: requested, enabled: shouldReplace) {
+                    try fileManager.createDirectory(at: url, withIntermediateDirectories: false, attributes: nil)
+                }
+            } catch { throw map(error, at: url) }
+            await report(progress, id: operationID, kind: .createFolder, completed: 1, total: 1, item: requested)
+            return FileOperationResult(operationID: operationID, kind: .createFolder,
+                                       items: [.init(source: requested, destination: url, status: .completed, replacedExisting: shouldReplace)])
         }
-        try checkCancellation()
-        do {
-            try withReplacementBackup(at: requested, enabled: destination.shouldReplace) {
-                try fileManager.createDirectory(at: destination.url, withIntermediateDirectories: false, attributes: nil)
-            }
-        } catch { throw map(error, at: destination.url) }
-        await report(progress, id: operationID, kind: .createFolder, completed: 1, total: 1, item: requested)
-        return FileOperationResult(operationID: operationID, kind: .createFolder,
-                                   items: [.init(source: requested, destination: destination.url, status: .completed)])
     }
 
-    private func runRename(_ request: RenameRequest, operationID: UUID,
-                           progress: (@Sendable (FileOperationProgress) async -> Void)?) async throws -> FileOperationResult {
+    private func runRename(
+        _ request: RenameRequest,
+        operationID: UUID,
+        conflictResolver: (any FileConflictResolving)?,
+        progress: (@Sendable (FileOperationProgress) async -> Void)?
+    ) async throws -> FileOperationResult {
         try checkSource(request.source)
         try validateName(request.name)
         let parent = request.source.deletingLastPathComponent()
@@ -142,28 +199,44 @@ public actor FileOperationEngine {
         if requested.standardizedFileURL == request.source.standardizedFileURL {
             throw FileOperationError.sameSourceAndDestination(request.source)
         }
-        let destination = try resolveConflict(at: requested, policy: request.conflictPolicy)
-        if destination.wasSkipped {
+        let destination = try await resolveConflict(
+            at: requested,
+            source: request.source,
+            kind: .rename,
+            remainingItemCount: 0,
+            policy: request.conflictPolicy,
+            resolver: conflictResolver
+        )
+        switch destination {
+        case .skip, .stop:
             await report(progress, id: operationID, kind: .rename, completed: 1, total: 1, item: request.source)
             return FileOperationResult(operationID: operationID, kind: .rename,
                                        items: [.init(source: request.source, destination: requested, status: .skipped)])
+        case let .proceed(url, shouldReplace):
+            try checkCancellation()
+            do {
+                try await withReplacementBackup(at: requested, enabled: shouldReplace) {
+                    try fileManager.moveItem(at: request.source, to: url)
+                }
+            } catch { throw map(error, at: url) }
+            await report(progress, id: operationID, kind: .rename, completed: 1, total: 1, item: request.source)
+            return FileOperationResult(operationID: operationID, kind: .rename,
+                                       items: [.init(source: request.source, destination: url, status: .completed, replacedExisting: shouldReplace)])
         }
-        try checkCancellation()
-        do {
-            try withReplacementBackup(at: requested, enabled: destination.shouldReplace) {
-                try fileManager.moveItem(at: request.source, to: destination.url)
-            }
-        }
-        catch { throw map(error, at: destination.url) }
-        await report(progress, id: operationID, kind: .rename, completed: 1, total: 1, item: request.source)
-        return FileOperationResult(operationID: operationID, kind: .rename,
-                                   items: [.init(source: request.source, destination: destination.url, status: .completed)])
     }
 
-    private func runBatch(_ request: FileBatchRequest, kind: FileOperationKind, operationID: UUID,
-                          progress: (@Sendable (FileOperationProgress) async -> Void)?) async throws -> FileOperationResult {
+    private func runBatch(
+        _ request: FileBatchRequest,
+        kind: FileOperationKind,
+        operationID: UUID,
+        conflictResolver: (any FileConflictResolving)?,
+        progress: (@Sendable (FileOperationProgress) async -> Void)?
+    ) async throws -> FileOperationResult {
         guard !request.sources.isEmpty else { return FileOperationResult(operationID: operationID, kind: kind, items: []) }
         try validateDirectory(request.destination, missingError: .destinationMissing(request.destination))
+        let totalBytes = request.sources.reduce(into: Int64(0)) { $0 += fileManager.byteCount(of: $1) }
+        var completedBytes: Int64 = 0
+        let throttler = ProgressThrottler()
         var results: [FileOperationItemResult] = []
         for (index, source) in request.sources.enumerated() {
             try checkCancellation()
@@ -175,33 +248,109 @@ public actor FileOperationEngine {
             if kind == .copy || kind == .move {
                 try validateNotInside(source: source, destination: requested)
             }
-            let destination = try resolveConflict(at: requested, policy: request.conflictPolicy)
-            if destination.wasSkipped {
+            let itemBytes = fileManager.byteCount(of: source)
+            await report(
+                progress,
+                id: operationID,
+                kind: kind,
+                completed: index,
+                total: request.sources.count,
+                item: source,
+                completedBytes: completedBytes,
+                totalBytes: totalBytes,
+                force: true
+            )
+            let destination = try await resolveConflict(
+                at: requested,
+                source: source,
+                kind: kind,
+                remainingItemCount: request.sources.count - index - 1,
+                policy: request.conflictPolicy,
+                resolver: conflictResolver
+            )
+            switch destination {
+            case .stop:
                 results.append(.init(source: source, destination: requested, status: .skipped))
-            } else {
+                results.append(contentsOf: request.sources[(index + 1)...].map {
+                    .init(
+                        source: $0,
+                        destination: request.destination.appendingPathComponent($0.lastPathComponent),
+                        status: .skipped
+                    )
+                })
+                await report(
+                    progress,
+                    id: operationID,
+                    kind: kind,
+                    completed: index,
+                    total: request.sources.count,
+                    item: source,
+                    completedBytes: completedBytes,
+                    totalBytes: totalBytes,
+                    force: true
+                )
+                return FileOperationResult(operationID: operationID, kind: kind, items: results)
+            case .skip:
+                completedBytes += itemBytes
+                results.append(.init(source: source, destination: requested, status: .skipped))
+            case let .proceed(url, shouldReplace):
                 do {
-                    try withReplacementBackup(at: requested, enabled: destination.shouldReplace) {
+                    try await withReplacementBackup(at: requested, enabled: shouldReplace) {
                         if kind == .copy {
-                            try fileManager.copyItem(at: source, to: destination.url)
+                            try await copyReportingProgress(
+                                from: source,
+                                to: url,
+                                operationID: operationID,
+                                kind: kind,
+                                completedItems: index,
+                                totalItems: request.sources.count,
+                                baseBytes: completedBytes,
+                                totalBytes: totalBytes,
+                                throttler: throttler,
+                                progress: progress
+                            )
                         } else {
                             let sourceVolume = try fileManager.volumeIdentifier(for: source)
                             let destinationVolume = try fileManager.volumeIdentifier(for: request.destination)
                             if sourceVolume != nil && destinationVolume != nil && sourceVolume != destinationVolume {
                                 // A cross-volume move is copy-then-remove.  Never
                                 // remove the source before copy reports success.
-                                try fileManager.copyItem(at: source, to: destination.url)
+                                try await copyReportingProgress(
+                                    from: source,
+                                    to: url,
+                                    operationID: operationID,
+                                    kind: kind,
+                                    completedItems: index,
+                                    totalItems: request.sources.count,
+                                    baseBytes: completedBytes,
+                                    totalBytes: totalBytes,
+                                    throttler: throttler,
+                                    progress: progress
+                                )
                                 try checkCancellation()
                                 try fileManager.removeItem(at: source)
                             } else {
-                                try fileManager.moveItem(at: source, to: destination.url)
+                                try fileManager.moveItem(at: source, to: url)
                             }
                         }
                     }
-                } catch { throw map(error, at: destination.url) }
-                results.append(.init(source: source, destination: destination.url, status: .completed))
+                } catch {
+                    throw map(error, at: url)
+                }
+                completedBytes += itemBytes
+                results.append(.init(source: source, destination: url, status: .completed, replacedExisting: shouldReplace))
             }
-            await report(progress, id: operationID, kind: kind, completed: index + 1,
-                         total: request.sources.count, item: source)
+            await report(
+                progress,
+                id: operationID,
+                kind: kind,
+                completed: index + 1,
+                total: request.sources.count,
+                item: source,
+                completedBytes: completedBytes,
+                totalBytes: totalBytes,
+                force: true
+            )
             // Yield after every item so cancellation can be observed even
             // when FileManager itself performs a fast operation.
             await Task.yield()
@@ -209,8 +358,12 @@ public actor FileOperationEngine {
         return FileOperationResult(operationID: operationID, kind: kind, items: results)
     }
 
-    private func runDuplicate(_ request: DuplicateRequest, operationID: UUID,
-                              progress: (@Sendable (FileOperationProgress) async -> Void)?) async throws -> FileOperationResult {
+    private func runDuplicate(
+        _ request: DuplicateRequest,
+        operationID: UUID,
+        conflictResolver: (any FileConflictResolving)?,
+        progress: (@Sendable (FileOperationProgress) async -> Void)?
+    ) async throws -> FileOperationResult {
         try checkSource(request.source)
         let requested: URL
         var isDirectory = ObjCBool(false)
@@ -225,22 +378,53 @@ public actor FileOperationEngine {
             throw FileOperationError.sameSourceAndDestination(request.source)
         }
         try validateNotInside(source: request.source, destination: requested)
-        let destination = try resolveConflict(at: requested, policy: request.conflictPolicy)
-        if destination.wasSkipped {
-            await report(progress, id: operationID, kind: .duplicate, completed: 1, total: 1, item: request.source)
+        let totalBytes = fileManager.byteCount(of: request.source)
+        let throttler = ProgressThrottler()
+        let destination = try await resolveConflict(
+            at: requested,
+            source: request.source,
+            kind: .duplicate,
+            remainingItemCount: 0,
+            policy: request.conflictPolicy,
+            resolver: conflictResolver
+        )
+        switch destination {
+        case .skip, .stop:
+            await report(progress, id: operationID, kind: .duplicate, completed: 1, total: 1, item: request.source, totalBytes: totalBytes)
             return FileOperationResult(operationID: operationID, kind: .duplicate,
                                        items: [.init(source: request.source, destination: requested, status: .skipped)])
+        case let .proceed(url, shouldReplace):
+            try checkCancellation()
+            do {
+                try await withReplacementBackup(at: requested, enabled: shouldReplace) {
+                    try await copyReportingProgress(
+                        from: request.source,
+                        to: url,
+                        operationID: operationID,
+                        kind: .duplicate,
+                        completedItems: 0,
+                        totalItems: 1,
+                        baseBytes: 0,
+                        totalBytes: totalBytes,
+                        throttler: throttler,
+                        progress: progress
+                    )
+                }
+            } catch { throw map(error, at: url) }
+            await report(
+                progress,
+                id: operationID,
+                kind: .duplicate,
+                completed: 1,
+                total: 1,
+                item: request.source,
+                completedBytes: totalBytes,
+                totalBytes: totalBytes,
+                force: true
+            )
+            return FileOperationResult(operationID: operationID, kind: .duplicate,
+                                       items: [.init(source: request.source, destination: url, status: .completed, replacedExisting: shouldReplace)])
         }
-        try checkCancellation()
-        do {
-            try withReplacementBackup(at: requested, enabled: destination.shouldReplace) {
-                try fileManager.copyItem(at: request.source, to: destination.url)
-            }
-        }
-        catch { throw map(error, at: destination.url) }
-        await report(progress, id: operationID, kind: .duplicate, completed: 1, total: 1, item: request.source)
-        return FileOperationResult(operationID: operationID, kind: .duplicate,
-                                   items: [.init(source: request.source, destination: destination.url, status: .completed)])
     }
 
     private func runTrash(_ request: TrashRequest, operationID: UUID,
@@ -264,10 +448,10 @@ public actor FileOperationEngine {
         return FileOperationResult(operationID: operationID, kind: .trash, items: results)
     }
 
-    private struct ConflictResolution {
-        let url: URL
-        let wasSkipped: Bool
-        let shouldReplace: Bool
+    private enum ConflictResolution {
+        case proceed(url: URL, shouldReplace: Bool)
+        case skip
+        case stop
     }
 
     private func acquireExecutionSlot() async {
@@ -290,23 +474,57 @@ public actor FileOperationEngine {
         }
     }
 
-    private func resolveConflict(at requested: URL, policy: FileConflictPolicy) throws -> ConflictResolution {
+    private func resolveConflict(
+        at requested: URL,
+        source: URL,
+        kind: FileOperationKind,
+        remainingItemCount: Int,
+        policy: FileConflictPolicy,
+        resolver: (any FileConflictResolving)?
+    ) async throws -> ConflictResolution {
         guard fileManager.fileExists(atPath: requested.path, isDirectory: nil) else {
-            return ConflictResolution(url: requested, wasSkipped: false, shouldReplace: false)
+            return .proceed(url: requested, shouldReplace: false)
         }
         switch policy {
-        case .fail: throw FileOperationError.destinationExists(requested)
-        case .skip: return ConflictResolution(url: requested, wasSkipped: true, shouldReplace: false)
-        case .replace: return ConflictResolution(url: requested, wasSkipped: false, shouldReplace: true)
+        case .fail:
+            throw FileOperationError.destinationExists(requested)
+        case .skip:
+            return .skip
+        case .replace:
+            return .proceed(url: requested, shouldReplace: true)
         case .keepBoth:
-            var candidate = requested
-            var index = 1
-            while fileManager.fileExists(atPath: candidate.path, isDirectory: nil) {
-                candidate = keepBothName(for: requested, number: index)
-                index += 1
+            return .proceed(url: uniqueKeepBothURL(for: requested), shouldReplace: false)
+        case .ask:
+            guard let resolver else {
+                throw FileOperationError.destinationExists(requested)
             }
-            return ConflictResolution(url: candidate, wasSkipped: false, shouldReplace: false)
+            let conflict = FileConflict(
+                source: source,
+                destination: requested,
+                kind: kind,
+                remainingItemCount: remainingItemCount
+            )
+            switch await resolver.resolve(conflict) {
+            case .skip:
+                return .skip
+            case .stop:
+                return .stop
+            case .replace:
+                return .proceed(url: requested, shouldReplace: true)
+            case .keepBoth:
+                return .proceed(url: uniqueKeepBothURL(for: requested), shouldReplace: false)
+            }
         }
+    }
+
+    private func uniqueKeepBothURL(for requested: URL) -> URL {
+        var candidate = requested
+        var index = 1
+        while fileManager.fileExists(atPath: candidate.path, isDirectory: nil) {
+            candidate = keepBothName(for: requested, number: index)
+            index += 1
+        }
+        return candidate
     }
 
     private func keepBothName(for url: URL, number: Int) -> URL {
@@ -321,16 +539,16 @@ public actor FileOperationEngine {
     /// new operation fails. The backup lives beside the destination, therefore
     /// this also works for a cross-volume source move.
     private func withReplacementBackup(at destination: URL, enabled: Bool,
-                                       operation: () throws -> Void) throws {
+                                       operation: () async throws -> Void) async throws {
         guard enabled else {
-            try operation()
+            try await operation()
             return
         }
         let backup = destination.deletingLastPathComponent()
             .appendingPathComponent(".explorer-replace-\(UUID().uuidString)")
         try fileManager.moveItem(at: destination, to: backup)
         do {
-            try operation()
+            try await operation()
         } catch {
             // Best effort cleanup of a partial result, followed by restoration
             // of the old destination. Preserve the original operation error.
@@ -347,6 +565,41 @@ public actor FileOperationEngine {
         // which is safer than deleting the replacement to restore an item
         // whose operation already completed.
         try fileManager.removeItem(at: backup)
+    }
+
+    private func copyReportingProgress(
+        from source: URL,
+        to destination: URL,
+        operationID: UUID,
+        kind: FileOperationKind,
+        completedItems: Int,
+        totalItems: Int,
+        baseBytes: Int64,
+        totalBytes: Int64,
+        throttler: ProgressThrottler,
+        progress: (@Sendable (FileOperationProgress) async -> Void)?
+    ) async throws {
+        do {
+            try await fileManager.copyItemWithProgress(at: source, to: destination) { copied in
+                guard throttler.shouldReport(force: false) else { return }
+                await self.report(
+                    progress,
+                    id: operationID,
+                    kind: kind,
+                    completed: completedItems,
+                    total: totalItems,
+                    item: source,
+                    completedBytes: baseBytes + copied,
+                    totalBytes: totalBytes,
+                    force: true
+                )
+            }
+        } catch {
+            if fileManager.fileExists(atPath: destination.path, isDirectory: nil) {
+                try? fileManager.removeItem(at: destination)
+            }
+            throw error
+        }
     }
 
     private func checkSource(_ source: URL) throws {
@@ -405,11 +658,27 @@ public actor FileOperationEngine {
         if Task.isCancelled { throw FileOperationError.cancelled }
     }
 
-    private func report(_ progress: (@Sendable (FileOperationProgress) async -> Void)?,
-                        id: UUID, kind: FileOperationKind, completed: Int, total: Int, item: URL) async {
-        guard let progress else { return }
-        await progress(FileOperationProgress(operationID: id, kind: kind,
-                                             completedItems: completed, totalItems: total, currentItem: item))
+    private func report(
+        _ progress: (@Sendable (FileOperationProgress) async -> Void)?,
+        id: UUID,
+        kind: FileOperationKind,
+        completed: Int,
+        total: Int,
+        item: URL,
+        completedBytes: Int64 = 0,
+        totalBytes: Int64? = nil,
+        force: Bool = true
+    ) async {
+        guard let progress, force else { return }
+        await progress(FileOperationProgress(
+            operationID: id,
+            kind: kind,
+            completedItems: completed,
+            totalItems: total,
+            currentItem: item,
+            completedBytes: completedBytes,
+            totalBytes: totalBytes
+        ))
     }
 
     private func map(_ error: Error, at url: URL) -> FileOperationError {

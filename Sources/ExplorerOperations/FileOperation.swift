@@ -13,12 +13,14 @@ public enum FileOperationKind: String, Codable, Sendable, CaseIterable {
 /// The action to take when an operation's destination already exists.
 ///
 /// `.replace` is deliberately opt-in.  The engine never replaces an item for
-/// the default policy.
+/// the default policy. `.ask` pauses for a ``FileConflictResolving`` decision
+/// and behaves like `.fail` when no resolver is provided.
 public enum FileConflictPolicy: String, Codable, Sendable, CaseIterable {
     case fail
     case skip
     case keepBoth
     case replace
+    case ask
 }
 
 public struct CreateFolderRequest: Codable, Equatable, Sendable {
@@ -130,6 +132,44 @@ public enum FileOperation: Codable, Equatable, Sendable {
     public static func trash(sources: [URL]) -> Self {
         .trash(TrashRequest(sources: sources))
     }
+
+    public var conflictPolicy: FileConflictPolicy? {
+        switch self {
+        case .createFolder(let request): request.conflictPolicy
+        case .rename(let request): request.conflictPolicy
+        case .copy(let request), .move(let request): request.conflictPolicy
+        case .duplicate(let request): request.conflictPolicy
+        case .trash: nil
+        }
+    }
+}
+
+/// A destination clash discovered while executing an operation.
+public struct FileConflict: Sendable, Equatable {
+    public let source: URL
+    public let destination: URL
+    public let kind: FileOperationKind
+    public let remainingItemCount: Int
+
+    public init(source: URL, destination: URL, kind: FileOperationKind, remainingItemCount: Int) {
+        self.source = source
+        self.destination = destination
+        self.kind = kind
+        self.remainingItemCount = remainingItemCount
+    }
+}
+
+/// The user's choice for one conflicting item.
+public enum FileConflictResolution: String, Sendable, Equatable {
+    case skip
+    case keepBoth
+    case replace
+    case stop
+}
+
+/// Called on the engine's task when ``FileConflictPolicy/ask`` meets an existing destination.
+public protocol FileConflictResolving: Sendable {
+    func resolve(_ conflict: FileConflict) async -> FileConflictResolution
 }
 
 public enum FileOperationItemStatus: String, Codable, Sendable {
@@ -141,11 +181,18 @@ public struct FileOperationItemResult: Codable, Equatable, Sendable {
     public let source: URL
     public let destination: URL?
     public let status: FileOperationItemStatus
+    public let replacedExisting: Bool
 
-    public init(source: URL, destination: URL?, status: FileOperationItemStatus) {
+    public init(
+        source: URL,
+        destination: URL?,
+        status: FileOperationItemStatus,
+        replacedExisting: Bool = false
+    ) {
         self.source = source
         self.destination = destination
         self.status = status
+        self.replacedExisting = replacedExisting
     }
 }
 
@@ -155,16 +202,31 @@ public struct FileOperationProgress: Codable, Equatable, Sendable {
     public let completedItems: Int
     public let totalItems: Int
     public let currentItem: URL?
+    public let completedBytes: Int64
+    public let totalBytes: Int64?
     public let fractionCompleted: Double
 
-    public init(operationID: UUID, kind: FileOperationKind, completedItems: Int,
-                totalItems: Int, currentItem: URL? = nil) {
+    public init(
+        operationID: UUID,
+        kind: FileOperationKind,
+        completedItems: Int,
+        totalItems: Int,
+        currentItem: URL? = nil,
+        completedBytes: Int64 = 0,
+        totalBytes: Int64? = nil
+    ) {
         self.operationID = operationID
         self.kind = kind
         self.completedItems = completedItems
         self.totalItems = totalItems
         self.currentItem = currentItem
-        self.fractionCompleted = totalItems == 0 ? 1 : Double(completedItems) / Double(totalItems)
+        self.completedBytes = completedBytes
+        self.totalBytes = totalBytes
+        if let totalBytes, totalBytes > 0 {
+            self.fractionCompleted = min(1, Double(completedBytes) / Double(totalBytes))
+        } else {
+            self.fractionCompleted = totalItems == 0 ? 1 : Double(completedItems) / Double(totalItems)
+        }
     }
 }
 

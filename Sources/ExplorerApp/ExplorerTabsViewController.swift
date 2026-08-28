@@ -1,4 +1,5 @@
 import AppKit
+import ExplorerUI
 
 @MainActor
 final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
@@ -6,9 +7,12 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
     var onNewTab: (() -> Void)?
     var onCloseTab: (() -> Void)?
     var onTabsReordered: (() -> Void)?
+    var onCancelOperation: (() -> Void)?
 
     private let tabView = NSTabView()
     private let tabStrip = ExplorerTabStripView()
+    private let activityView = BrowserOperationActivityView()
+    private var activityHeightConstraint: NSLayoutConstraint?
     private var titlebarAccessoryController: ExplorerTabTitlebarAccessoryViewController?
 
     var tabViewItems: [NSTabViewItem] { tabView.tabViewItems }
@@ -43,12 +47,27 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
         }
 
         view.addSubview(tabView)
+        view.addSubview(activityView)
+        activityView.translatesAutoresizingMaskIntoConstraints = false
+        activityView.onCancel = { [weak self] in self?.onCancelOperation?() }
+        let activityHeight = activityView.heightAnchor.constraint(equalToConstant: 0)
+        activityHeightConstraint = activityHeight
         NSLayoutConstraint.activate([
             tabView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tabView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tabView.topAnchor.constraint(equalTo: view.topAnchor),
-            tabView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            tabView.bottomAnchor.constraint(equalTo: activityView.topAnchor),
+            activityView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            activityView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            activityView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            activityHeight,
         ])
+    }
+
+    func setOperationActivity(_ activity: BrowserOperationActivity?) {
+        loadViewIfNeeded()
+        activityView.display(activity)
+        activityHeightConstraint?.constant = activity == nil ? 0 : 56
     }
 
     func makeTitlebarAccessoryViewController() -> NSTitlebarAccessoryViewController {

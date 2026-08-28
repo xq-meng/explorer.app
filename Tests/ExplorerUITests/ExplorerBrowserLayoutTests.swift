@@ -114,6 +114,65 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
 
         XCTAssertEqual(received, BrowserSortDescriptor(field: .size, ascending: false))
     }
+
+    func testConflictAlertUsesSafeDefaultAndApplyToAll() {
+        let prompt = BrowserConflictPrompt(
+            sourceName: "report.txt",
+            destinationName: "report.txt",
+            destinationFolder: "Documents",
+            operationTitle: "Copy",
+            remainingItemCount: 4
+        )
+        let (alert, applyToAll) = BrowserConflictAlert.makeAlert(prompt: prompt)
+        XCTAssertEqual(alert.buttons.map(\.title), ["Keep Both", "Skip", "Replace", "Stop"])
+        XCTAssertEqual(alert.buttons[0].keyEquivalent, "\r")
+        XCTAssertEqual(alert.buttons[3].keyEquivalent, "\u{1b}")
+        XCTAssertIdentical(alert.accessoryView, applyToAll)
+
+        let keepBoth = BrowserConflictAlert.decision(from: .alertFirstButtonReturn, applyToAll: true)
+        XCTAssertEqual(keepBoth, BrowserConflictDecision(choice: .keepBoth, applyToAll: true))
+        let stop = BrowserConflictAlert.decision(
+            from: NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1),
+            applyToAll: true
+        )
+        XCTAssertEqual(stop.choice, BrowserConflictChoice.stop)
+        XCTAssertFalse(stop.applyToAll)
+    }
+
+    func testConflictAlertHidesApplyToAllForTheLastItem() {
+        let prompt = BrowserConflictPrompt(
+            sourceName: "report.txt",
+            destinationName: "report.txt",
+            destinationFolder: "Documents",
+            operationTitle: "Move",
+            remainingItemCount: 0
+        )
+        let (alert, _) = BrowserConflictAlert.makeAlert(prompt: prompt)
+        XCTAssertNil(alert.accessoryView)
+    }
+
+    func testOperationActivityViewShowsProgressAndCancel() {
+        let view = BrowserOperationActivityView(frame: NSRect(x: 0, y: 0, width: 640, height: 56))
+        view.display(BrowserOperationActivity(
+            title: "Copying 1 of 3",
+            detail: "report.txt — 12 MB of 40 MB",
+            fractionCompleted: 0.3,
+            queuedCount: 1
+        ))
+        XCTAssertFalse(view.isHidden)
+        XCTAssertEqual(view.accessibilityLabel(), "Copying 1 of 3")
+
+        var cancelled = false
+        view.onCancel = { cancelled = true }
+        view.display(nil)
+        XCTAssertTrue(view.isHidden)
+
+        view.display(BrowserOperationActivity(title: "Moving 1 of 1", detail: "Notes", fractionCompleted: 0.8))
+        let button = allDescendants(of: view, as: NSButton.self).first { $0.title == "Cancel" }
+        XCTAssertNotNil(button)
+        button?.performClick(nil)
+        XCTAssertTrue(cancelled)
+    }
 }
 
 @MainActor

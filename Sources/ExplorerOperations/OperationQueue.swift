@@ -62,6 +62,7 @@ public actor FileOperationQueue {
     private var runningID: UUID?
     private var runningTask: Task<Void, Never>?
     private var waiters: [UUID: [CheckedContinuation<FileOperationResult, Error>]] = [:]
+    private var conflictResolvers: [UUID: any FileConflictResolving] = [:]
 
     public init(engine: FileOperationEngine = FileOperationEngine(), bufferSize: Int = 256) {
         let size = max(1, bufferSize)
@@ -77,11 +78,15 @@ public actor FileOperationQueue {
     deinit { eventContinuation.finish() }
 
     @discardableResult
-    public func submit(_ operation: FileOperation) -> UUID {
+    public func submit(
+        _ operation: FileOperation,
+        conflictResolver: (any FileConflictResolving)? = nil
+    ) -> UUID {
         let id = UUID()
         let snapshot = FileOperationQueueSnapshot(id: id, operation: operation, state: .queued)
         jobs[id] = snapshot
         order.append(id)
+        conflictResolvers[id] = conflictResolver
         emit(.stateChanged(snapshot))
         startNextIfNeeded()
         return id
@@ -105,6 +110,7 @@ public actor FileOperationQueue {
             jobs[id] = cancelled
             emit(.stateChanged(cancelled))
             finishWaiters(for: id, with: .failure(FileOperationError.cancelled))
+            conflictResolvers[id] = nil
             return true
         case .running:
             guard runningID == id else { return false }
@@ -143,12 +149,17 @@ public actor FileOperationQueue {
         jobs[id] = running
         emit(.stateChanged(running))
         let operation = snapshot.operation
+        let resolver = conflictResolvers[id]
         runningTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await self.engine.execute(operation, asyncProgress: { [weak self] progress in
-                    await self?.receive(progress: progress, for: id)
-                })
+                let result = try await self.engine.execute(
+                    operation,
+                    conflictResolver: resolver,
+                    asyncProgress: { [weak self] progress in
+                        await self?.receive(progress: progress, for: id)
+                    }
+                )
                 await self.finish(id: id, result: result, error: nil)
             } catch {
                 await self.finish(id: id, result: nil, error: error)
@@ -158,12 +169,18 @@ public actor FileOperationQueue {
 
     private func receive(progress: FileOperationProgress, for id: UUID) {
         guard jobs[id]?.state == .running else { return }
-        emit(.progress(FileOperationQueueProgress(id: id,
-                                                  progress: FileOperationProgress(operationID: id,
-                                                                                   kind: progress.kind,
-                                                                                   completedItems: progress.completedItems,
-                                                                                   totalItems: progress.totalItems,
-                                                                                   currentItem: progress.currentItem))))
+        emit(.progress(FileOperationQueueProgress(
+            id: id,
+            progress: FileOperationProgress(
+                operationID: id,
+                kind: progress.kind,
+                completedItems: progress.completedItems,
+                totalItems: progress.totalItems,
+                currentItem: progress.currentItem,
+                completedBytes: progress.completedBytes,
+                totalBytes: progress.totalBytes
+            )
+        )))
     }
 
     private func finish(id: UUID, result: FileOperationResult?, error: Error?) {
@@ -181,6 +198,7 @@ public actor FileOperationQueue {
         let final = FileOperationQueueSnapshot(id: id, operation: snapshot.operation, state: state,
                                                result: stableResult, errorDescription: description)
         jobs[id] = final
+        conflictResolvers[id] = nil
         emit(.stateChanged(final))
         if let stableResult {
             finishWaiters(for: id, with: .success(stableResult))

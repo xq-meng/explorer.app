@@ -20,7 +20,9 @@ public enum FileOperationUndoPlanner {
         for operation: FileOperation,
         result: FileOperationResult
     ) -> FileOperationUndoPlan? {
-        guard operation.kind == result.kind, !usesDestructiveReplacement(operation) else { return nil }
+        guard operation.kind == result.kind,
+              !usesDestructiveReplacement(operation),
+              result.items.allSatisfy({ !$0.replacedExisting }) else { return nil }
         let completed = result.items.filter { $0.status == .completed }
         guard !completed.isEmpty else { return nil }
 

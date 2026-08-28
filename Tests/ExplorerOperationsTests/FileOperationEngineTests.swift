@@ -194,6 +194,92 @@ final class FileOperationEngineTests: XCTestCase {
         XCTAssertEqual(states.last, .completed)
         XCTAssertTrue(sawProgress)
     }
+
+    func testInteractiveConflictsCanSkipKeepBothReplaceAndStop() async throws {
+        let destination = root.appendingPathComponent("Out", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let one = root.appendingPathComponent("one.txt")
+        let two = root.appendingPathComponent("two.txt")
+        let three = root.appendingPathComponent("three.txt")
+        let four = root.appendingPathComponent("four.txt")
+        try Data("1".utf8).write(to: one)
+        try Data("2".utf8).write(to: two)
+        try Data("3".utf8).write(to: three)
+        try Data("4".utf8).write(to: four)
+        try Data("old1".utf8).write(to: destination.appendingPathComponent("one.txt"))
+        try Data("old2".utf8).write(to: destination.appendingPathComponent("two.txt"))
+        try Data("old3".utf8).write(to: destination.appendingPathComponent("three.txt"))
+        try Data("old4".utf8).write(to: destination.appendingPathComponent("four.txt"))
+
+        let resolver = ScriptedFileConflictResolver(responses: [.skip, .keepBoth, .replace, .stop])
+        let result = try await engine.execute(
+            .copy(sources: [one, two, three, four], to: destination, conflictPolicy: .ask),
+            conflictResolver: resolver
+        )
+
+        XCTAssertEqual(result.completedItems, 2)
+        XCTAssertEqual(result.skippedItems, 2)
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("one.txt")), "old1")
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("two copy.txt")), "2")
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("three.txt")), "3")
+        XCTAssertTrue(result.items[2].replacedExisting)
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("four.txt")), "old4")
+        let promptCount = await resolver.promptCount()
+        XCTAssertEqual(promptCount, 4)
+    }
+
+    func testAskWithoutResolverFailsLikeTheDefaultPolicy() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("Out", isDirectory: true)
+        try Data("new".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        try Data("old".utf8).write(to: destination.appendingPathComponent("source.txt"))
+        do {
+            _ = try await engine.execute(.copy(sources: [source], to: destination, conflictPolicy: .ask))
+            XCTFail("Expected a conflict")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .destinationExists(destination.appendingPathComponent("source.txt")))
+        }
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("source.txt")), "old")
+    }
+
+    func testCopyReportsByteProgressFromTheFileManagerClient() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("Out", isDirectory: true)
+        try Data("hello".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let client = ChunkedCopyFileManager()
+        let progressEngine = FileOperationEngine(fileManager: client)
+        let recorded = ProgressBytes()
+        _ = try await progressEngine.execute(
+            .copy(sources: [source], to: destination),
+            asyncProgress: { progress in recorded.append(progress.completedBytes) }
+        )
+        let bytes = recorded.values
+        XCTAssertTrue(bytes.contains(40))
+        XCTAssertTrue(bytes.contains(100))
+        XCTAssertEqual(bytes.last, 100)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("source.txt").path))
+    }
+
+    func testQueueForwardsInteractiveConflictResolver() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("Out", isDirectory: true)
+        try Data("new".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        try Data("old".utf8).write(to: destination.appendingPathComponent("source.txt"))
+        let queue = FileOperationQueue()
+        let resolver = ScriptedFileConflictResolver(responses: [.keepBoth])
+        let id = await queue.submit(
+            .copy(sources: [source], to: destination, conflictPolicy: .ask),
+            conflictResolver: resolver
+        )
+        let result = try await queue.result(for: id)
+        XCTAssertEqual(result.completedItems, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("source copy.txt").path))
+        let promptCount = await resolver.promptCount()
+        XCTAssertEqual(promptCount, 1)
+    }
 }
 
 /// For safety this test records the trash request instead of moving anything
@@ -234,6 +320,68 @@ private final class FailingCopyFileManager: FileManagerClient, @unchecked Sendab
         throw NSError(domain: "ExplorerOperationsTests", code: 1,
                       userInfo: [NSLocalizedDescriptionKey: "injected copy failure"])
     }
+    func moveItem(at srcURL: URL, to dstURL: URL) throws { try backing.moveItem(at: srcURL, to: dstURL) }
+    func removeItem(at URL: URL) throws { try backing.removeItem(at: URL) }
+    func trashItem(at url: URL, resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws {
+        try backing.trashItem(at: url, resultingItemURL: resultingItemURL)
+    }
+    func volumeIdentifier(for url: URL) throws -> String? { try backing.volumeIdentifier(for: url) }
+}
+
+private final class ProgressBytes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Int64] = []
+
+    func append(_ value: Int64) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+
+    var values: [Int64] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+actor ScriptedFileConflictResolver: FileConflictResolving {
+    private var responses: [FileConflictResolution]
+    private(set) var prompts: [FileConflict] = []
+
+    init(responses: [FileConflictResolution]) {
+        self.responses = responses
+    }
+
+    func resolve(_ conflict: FileConflict) async -> FileConflictResolution {
+        prompts.append(conflict)
+        if responses.isEmpty { return .stop }
+        return responses.removeFirst()
+    }
+
+    func promptCount() -> Int { prompts.count }
+}
+
+private final class ChunkedCopyFileManager: FileManagerClient, @unchecked Sendable {
+    private let backing = LocalFileManagerClient()
+    func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
+        backing.fileExists(atPath: path, isDirectory: isDirectory)
+    }
+    func createDirectory(at url: URL, withIntermediateDirectories createIntermediates: Bool,
+                         attributes: [FileAttributeKey: Any]?) throws {
+        try backing.createDirectory(at: url, withIntermediateDirectories: createIntermediates, attributes: attributes)
+    }
+    func copyItem(at srcURL: URL, to dstURL: URL) throws { try backing.copyItem(at: srcURL, to: dstURL) }
+    func copyItemWithProgress(
+        at srcURL: URL,
+        to dstURL: URL,
+        onBytesCopied: @escaping @Sendable (Int64) async -> Void
+    ) async throws {
+        await onBytesCopied(40)
+        await onBytesCopied(100)
+        try copyItem(at: srcURL, to: dstURL)
+    }
+    func byteCount(of url: URL) -> Int64 { 100 }
     func moveItem(at srcURL: URL, to dstURL: URL) throws { try backing.moveItem(at: srcURL, to: dstURL) }
     func removeItem(at URL: URL) throws { try backing.removeItem(at: URL) }
     func trashItem(at url: URL, resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws {

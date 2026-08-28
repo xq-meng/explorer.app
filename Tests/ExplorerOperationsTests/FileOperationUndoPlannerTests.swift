@@ -71,6 +71,20 @@ final class FileOperationUndoPlannerTests: XCTestCase {
         XCTAssertNil(FileOperationUndoPlanner.plan(for: operation, result: result))
     }
 
+    func testInteractiveReplacementIsNotOfferedAsUndoable() {
+        let source = URL(fileURLWithPath: "/source/report.txt")
+        let destination = URL(fileURLWithPath: "/destination/report.txt")
+        let operation = FileOperation.copy(
+            sources: [source],
+            to: destination.deletingLastPathComponent(),
+            conflictPolicy: .ask
+        )
+        let result = FileOperationResult(kind: .copy, items: [
+            .init(source: source, destination: destination, status: .completed, replacedExisting: true),
+        ])
+        XCTAssertNil(FileOperationUndoPlanner.plan(for: operation, result: result))
+    }
+
     func testMoveUndoAndRedoRoundTripThroughSafetyEngine() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ExplorerUndoRoundTrip-\(UUID().uuidString)", isDirectory: true)

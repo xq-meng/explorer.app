@@ -22,6 +22,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private var historyTask: Task<Void, Never>?
     private var didRestoreSession = false
     private var isRestoringSession = false
+    private var operationSnapshots: [UUID: FileOperationQueueSnapshot] = [:]
+    private var operationProgress: [UUID: FileOperationProgress] = [:]
+    private var operationOrder: [UUID] = []
 
     init() {
         let defaultFrame = NSRect(x: 0, y: 0, width: 1280, height: 760)
@@ -47,6 +50,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         tabViewController.onNewTab = { [weak self] in self?.newTab() }
         tabViewController.onCloseTab = { [weak self] in self?.closeCurrentTab() }
         tabViewController.onTabsReordered = { [weak self] in self?.persistSessionState() }
+        tabViewController.onCancelOperation = { [weak self] in self?.cancelCurrentOperation() }
         observeOperationEvents()
     }
 
@@ -280,8 +284,144 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
             for await event in events {
                 guard !Task.isCancelled, let self else { return }
                 self.sessions.forEach { $0.handleOperationEvent(event) }
+                self.track(event)
             }
         }
+    }
+
+    private func track(_ event: FileOperationQueueEvent) {
+        switch event {
+        case let .stateChanged(snapshot):
+            if operationSnapshots[snapshot.id] == nil {
+                operationOrder.append(snapshot.id)
+            }
+            operationSnapshots[snapshot.id] = snapshot
+            switch snapshot.state {
+            case .completed, .failed, .cancelled:
+                operationProgress[snapshot.id] = nil
+            case .queued, .running:
+                break
+            }
+        case let .progress(progress):
+            operationProgress[progress.id] = progress.progress
+        }
+        updateOperationActivity()
+        pruneFinishedOperations()
+    }
+
+    private func updateOperationActivity() {
+        let queued = operationOrder.compactMap { operationSnapshots[$0] }.filter { $0.state == .queued }
+        let running = operationOrder.compactMap { operationSnapshots[$0] }.first { $0.state == .running }
+        guard running != nil || !queued.isEmpty else {
+            tabViewController.setOperationActivity(nil)
+            return
+        }
+        tabViewController.setOperationActivity(activity(running: running, queuedCount: queued.count))
+    }
+
+    private func activity(
+        running: FileOperationQueueSnapshot?,
+        queuedCount: Int
+    ) -> BrowserOperationActivity {
+        if let running {
+            let progress = operationProgress[running.id]
+            let completed = progress?.completedItems ?? 0
+            let total = progress?.totalItems ?? max(1, itemCount(for: running.operation))
+            let current = progress?.currentItem?.lastPathComponent
+            let displayedItem = completed < total ? completed + 1 : total
+            let title = "\(progressTitle(for: running.operation.kind)) \(displayedItem) of \(total)"
+            return BrowserOperationActivity(
+                title: queuedCount > 0 ? "\(title) • \(queuedCount) waiting" : title,
+                detail: progressDetail(progress: progress, fallbackName: current, kind: running.operation.kind),
+                fractionCompleted: progress?.fractionCompleted ?? 0,
+                queuedCount: queuedCount
+            )
+        }
+        let queued = operationOrder.compactMap { operationSnapshots[$0] }.first { $0.state == .queued }
+        return BrowserOperationActivity(
+            title: queued.map { "\(progressTitle(for: $0.operation.kind)) waiting" } ?? "Operation waiting",
+            detail: queued.map { waitingDetail(for: $0.operation) } ?? "Waiting to start.",
+            fractionCompleted: 0,
+            queuedCount: queuedCount
+        )
+    }
+
+    private func progressTitle(for kind: FileOperationKind) -> String {
+        switch kind {
+        case .createFolder: "Creating folder"
+        case .rename: "Renaming"
+        case .copy: "Copying"
+        case .move: "Moving"
+        case .duplicate: "Duplicating"
+        case .trash: "Moving to Trash"
+        }
+    }
+
+    private func progressDetail(
+        progress: FileOperationProgress?,
+        fallbackName: String?,
+        kind: FileOperationKind
+    ) -> String {
+        let name = fallbackName ?? progress?.currentItem?.lastPathComponent ?? progressTitle(for: kind)
+        if let progress, let totalBytes = progress.totalBytes, totalBytes > 0 {
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+            let completed = formatter.string(fromByteCount: progress.completedBytes)
+            let total = formatter.string(fromByteCount: totalBytes)
+            return "\(name) — \(completed) of \(total)"
+        }
+        return name
+    }
+
+    private func waitingDetail(for operation: FileOperation) -> String {
+        switch operation {
+        case .createFolder(let request):
+            return request.name
+        case .rename(let request):
+            return request.name
+        case .copy(let request), .move(let request):
+            return request.sources.count == 1
+                ? request.sources[0].lastPathComponent
+                : "\(request.sources.count) items"
+        case .duplicate(let request):
+            return request.source.lastPathComponent
+        case .trash(let request):
+            return request.sources.count == 1
+                ? request.sources[0].lastPathComponent
+                : "\(request.sources.count) items"
+        }
+    }
+
+    private func itemCount(for operation: FileOperation) -> Int {
+        switch operation {
+        case .copy(let request), .move(let request): request.sources.count
+        case .trash(let request): request.sources.count
+        case .createFolder, .rename, .duplicate: 1
+        }
+    }
+
+    private func pruneFinishedOperations() {
+        let finishedIDs = operationSnapshots.compactMap { id, snapshot -> UUID? in
+            switch snapshot.state {
+            case .completed, .failed, .cancelled: id
+            case .queued, .running: nil
+            }
+        }
+        for id in finishedIDs {
+            operationSnapshots[id] = nil
+            operationProgress[id] = nil
+            operationOrder.removeAll { $0 == id }
+        }
+    }
+
+    private func cancelCurrentOperation() {
+        let target = operationOrder.compactMap { operationSnapshots[$0] }.first {
+            $0.state == .running || $0.state == .queued
+        }
+        guard let target else { return }
+        let queue = operationQueue
+        Task { _ = await queue.cancel(target.id) }
     }
 
     private func recordUndoPlan(for operation: FileOperation, result: FileOperationResult) {
