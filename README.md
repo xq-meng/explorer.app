@@ -8,22 +8,25 @@ The project is in active development. See [ROADMAP.md](ROADMAP.md) for scope, mi
 
 The current implementation provides:
 
-- an AppKit application shell with independent tabs and navigation history;
+- an AppKit application shell with multiple windows, independent tabs, and navigation history;
 - asynchronous local directory browsing, mounted volumes, details and icon views;
 - visible-item Quick Look thumbnails with cancellation and a bounded memory cache;
 - a lazy folder tree that follows navigation, clickable/editable breadcrumbs, and `Command-L` address entry;
-- current-folder search, directory change monitoring, an embedded/toggleable Quick Look pane, and file URL drag/drop;
+- subtree search backed by Spotlight with recursive enumeration fallback, plus directory change monitoring;
+- an embedded/toggleable Quick Look pane and file URL or promised-file drag/drop;
 - an Explorer-style status bar with item, selection, and selected-size summaries;
-- a queued, testable file-operation engine for create, rename, copy, move, duplicate, paste, and Trash;
+- a queued file-operation engine for create, rename, copy, move, duplicate, paste, and Trash, with byte progress and user-visible cancellation;
+- interactive conflict handling with replace, keep-both, skip, stop, and apply-to-all choices;
 - safe Undo/Redo plans routed back through the same operation queue and conflict checks;
 - custom Favorites plus tab-path and selected-tab restoration between launches;
 - sortable file columns, per-tab view/sort restoration, and a Settings window for hidden files and preview defaults;
 - an original multi-resolution macOS application icon;
 - Swift unit, integration, cancellation, conflict, and filesystem-safety tests.
 
-This is a development prototype, not the roadmap's Beta release. The directory
-tree still needs large-volume performance validation; the Spotlight backend,
-file promises, sandbox access, signing, and notarization remain planned work.
+This is a development prototype, not the roadmap's Beta release. Large-directory,
+external-volume, SMB, iCloud, and cross-application drag/drop behavior still
+needs compatibility validation. Filesystem coordination, Developer ID signing,
+notarization, and optional sandboxed distribution also remain release work.
 
 ## Product reference
 
@@ -71,15 +74,23 @@ Before publishing for the first time, add a repository Actions secret named
 `HOMEBREW_TAP_TOKEN`. Use a fine-grained personal access token limited to the
 `xq-meng/homebrew-tap` repository with **Contents: Read and write** permission.
 
-To publish after updating both version values in `Resources/Info.plist`:
+To publish the next preview after updating both version values in
+`Resources/Info.plist`, for example:
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 The published preview remains ad-hoc signed and unnotarized. Homebrew users must
 follow the trust and quarantine instructions documented by the tap.
+
+Install the current preview with:
+
+```bash
+brew install --cask xq-meng/tap/explorer-app
+xattr -dr com.apple.quarantine /Applications/Explorer.app
+```
 
 ## Useful commands
 
