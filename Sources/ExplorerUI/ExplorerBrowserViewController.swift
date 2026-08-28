@@ -29,6 +29,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     public var onFileCommand: ((BrowserFileCommand) -> Void)?
     public var canPerformFileCommand: ((BrowserFileCommand) -> Bool)?
     public var onFileURLDrop: ((BrowserFileDrop) -> Bool)?
+    public var onPromisedFileDrop: ((BrowserPromisedFileDrop) -> Bool)?
     public var canAcceptFileURLDrop: (() -> Bool)?
 
     private let breadcrumbBar = BrowserBreadcrumbBar()
@@ -317,12 +318,12 @@ public final class ExplorerBrowserViewController: NSViewController {
         breadcrumbBar.onNavigate = { [weak self] url in self?.onBreadcrumbSelection?(url) }
         breadcrumbBar.onSubmitPath = { [weak self] path in self?.onPathSubmission?(path) }
 
-        searchField.placeholderString = "Filter"
+        searchField.placeholderString = "Search"
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(submitSearch(_:))
-        searchField.setAccessibilityLabel("Filter current folder")
-        searchField.setAccessibilityHelp("Filters the current folder by name.")
+        searchField.setAccessibilityLabel("Search this folder")
+        searchField.setAccessibilityHelp("Searches the current folder and its subfolders by name.")
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
 
@@ -467,7 +468,7 @@ public final class ExplorerBrowserViewController: NSViewController {
         fileTableView.doubleAction = #selector(openSelectedFileRow(_:))
         fileTableView.setAccessibilityLabel("Folder contents")
         fileTableView.menu = makeFileContextMenu()
-        fileTableView.registerForDraggedTypes([.fileURL])
+        fileTableView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         fileTableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         fileTableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
     }
@@ -514,7 +515,7 @@ public final class ExplorerBrowserViewController: NSViewController {
         collectionView.allowsMultipleSelection = true
         collectionView.setAccessibilityLabel("Folder contents as icons")
         collectionView.menu = makeFileContextMenu()
-        collectionView.registerForDraggedTypes([.fileURL])
+        collectionView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         collectionView.onDrop = { [weak self] info, indexPath in
@@ -641,24 +642,29 @@ public final class ExplorerBrowserViewController: NSViewController {
     private func validateDrop(_ info: NSDraggingInfo, target: BrowserFileRow?) -> NSDragOperation {
         guard canAcceptFileURLDrop?() == true,
               target?.isNavigable != false,
-              !droppedFileURLs(from: info).isEmpty else { return [] }
+              BrowserDropPasteboard.canAccept(info.draggingPasteboard) else { return [] }
         return dropIntent(for: info) == .move ? .move : .copy
     }
 
     private func acceptDrop(_ info: NSDraggingInfo, target: BrowserFileRow?) -> Bool {
-        let urls = droppedFileURLs(from: info)
-        guard !urls.isEmpty else { return false }
-        return onFileURLDrop?(BrowserFileDrop(
-            urls: urls,
-            destinationURL: target?.isNavigable == true ? target?.url : nil,
-            intent: dropIntent(for: info)
-        )) ?? false
-    }
-
-    private func droppedFileURLs(from info: NSDraggingInfo) -> [URL] {
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-        let objects = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [NSURL] ?? []
-        return objects.map { $0 as URL }
+        let destination = target?.isNavigable == true ? target?.url : nil
+        let intent = dropIntent(for: info)
+        let payload = BrowserDropPasteboard.read(info.draggingPasteboard)
+        if !payload.fileURLs.isEmpty {
+            return onFileURLDrop?(BrowserFileDrop(
+                urls: payload.fileURLs,
+                destinationURL: destination,
+                intent: intent
+            )) ?? false
+        }
+        if !payload.promisedFileReceivers.isEmpty {
+            return onPromisedFileDrop?(BrowserPromisedFileDrop(
+                receivers: payload.promisedFileReceivers,
+                destinationURL: destination,
+                intent: intent
+            )) ?? false
+        }
+        return false
     }
 
     private func dropIntent(for info: NSDraggingInfo) -> BrowserDropIntent {

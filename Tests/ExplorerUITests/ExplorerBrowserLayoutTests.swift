@@ -151,6 +151,49 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertNil(alert.accessoryView)
     }
 
+    func testSearchFieldIsLabeledForSubtreeSearch() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        guard let field = allDescendants(of: controller.view, as: NSSearchField.self).first else {
+            return XCTFail("Expected the folder search field")
+        }
+        XCTAssertEqual(field.placeholderString, "Search")
+        XCTAssertEqual(field.accessibilityLabel(), "Search this folder")
+    }
+
+    func testFolderViewsRegisterPromisedFileDropTypes() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        let promised = Set(NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
+        XCTAssertFalse(promised.isEmpty)
+
+        guard let table = allDescendants(of: controller.view, as: NSTableView.self)
+            .first(where: { !($0 is NSOutlineView) }) else {
+            return XCTFail("Expected the folder contents table")
+        }
+        XCTAssertTrue(promised.isSubset(of: Set(table.registeredDraggedTypes)))
+        XCTAssertTrue(table.registeredDraggedTypes.contains(.fileURL))
+
+        guard let collection = allDescendants(of: controller.view, as: NSCollectionView.self).first else {
+            return XCTFail("Expected the icon collection")
+        }
+        XCTAssertTrue(promised.isSubset(of: Set(collection.registeredDraggedTypes)))
+    }
+
+    func testDropPasteboardPrefersFileURLsOverPromises() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        let url = URL(fileURLWithPath: "/tmp/explorer-drop-test.txt")
+        XCTAssertTrue(pasteboard.writeObjects([url as NSURL]))
+
+        XCTAssertTrue(BrowserDropPasteboard.containsFileURLs(pasteboard))
+        let payload = BrowserDropPasteboard.read(pasteboard)
+        XCTAssertEqual(payload.fileURLs.map(\.path), [url.standardizedFileURL.path])
+        XCTAssertTrue(payload.promisedFileReceivers.isEmpty)
+        XCTAssertTrue(BrowserDropPasteboard.draggedTypes.contains(.fileURL))
+        XCTAssertFalse(BrowserDropPasteboard.promisedFileTypes.isEmpty)
+    }
+
     func testOperationActivityViewShowsProgressAndCancel() {
         let view = BrowserOperationActivityView(frame: NSRect(x: 0, y: 0, width: 640, height: 56))
         view.display(BrowserOperationActivity(

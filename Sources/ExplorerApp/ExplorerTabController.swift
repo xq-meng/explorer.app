@@ -48,6 +48,13 @@ final class ExplorerTabController: NSViewController {
     private var pendingInlineRenameURL: URL?
     private var thumbnailTasks: [URL: Task<Void, Never>] = [:]
     private var thumbnailRequestIDs: [URL: UUID] = [:]
+    private let filePromiseQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "app.explorer.file-promises"
+        queue.qualityOfService = .userInitiated
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
 
     init(
         homeURL: URL,
@@ -297,6 +304,7 @@ final class ExplorerTabController: NSViewController {
         browser.onFileCommand = { [weak self] command in self?.performFileCommand(command) }
         browser.canPerformFileCommand = { [weak self] command in self?.canPerformFileCommand(command) ?? false }
         browser.onFileURLDrop = { [weak self] drop in self?.accept(drop) ?? false }
+        browser.onPromisedFileDrop = { [weak self] drop in self?.accept(drop) ?? false }
         browser.canAcceptFileURLDrop = { [weak self] in self?.currentDirectoryURL != nil }
     }
 
@@ -440,21 +448,56 @@ final class ExplorerTabController: NSViewController {
         let generation = searchGeneration
         searchTask?.cancel()
         let service = searchService
-        let query = SearchQuery(text: text)
+        let query = SearchQuery(text: text, includesHiddenFiles: showsHiddenFiles)
+        let root = currentSnapshot.directoryURL
         searchTask = Task { [weak self] in
             do {
-                let items = try await service.filter(currentSnapshot, matching: query)
+                let immediate = try await service.filter(currentSnapshot, matching: query)
                 guard !Task.isCancelled, let self, generation == self.searchGeneration,
-                      self.currentSnapshot?.directoryURL == currentSnapshot.directoryURL else { return }
-                self.selection.formIntersection(Set(items.map(\.url)))
-                self.browser.displayRows(items.map(BrowserFileRow.init), selecting: self.selection)
-                self.browser.showStatus("\(items.count) \(items.count == 1 ? "match" : "matches") for “\(text)”.")
+                      self.currentSnapshot?.directoryURL == root else { return }
+                self.displaySearchResults(immediate, query: text, isComplete: immediate.count >= query.maximumResults)
+
+                guard immediate.count < query.maximumResults else { return }
+                let subtree = try await service.searchSubtree(at: root, matching: query)
+                guard !Task.isCancelled, generation == self.searchGeneration,
+                      self.currentSnapshot?.directoryURL == root else { return }
+                self.displaySearchResults(
+                    Self.mergeSearchResults(immediate, subtree),
+                    query: text,
+                    isComplete: true
+                )
             } catch is CancellationError {
             } catch SearchServiceError.cancelled {
             } catch {
                 guard !Task.isCancelled, let self, generation == self.searchGeneration else { return }
                 self.browser.showStatus(error.localizedDescription)
             }
+        }
+    }
+
+    private func displaySearchResults(_ items: [FileItem], query: String, isComplete: Bool) {
+        selection.formIntersection(Set(items.map(\.url)))
+        browser.displayRows(items.map(BrowserFileRow.init), selecting: selection)
+        let noun = items.count == 1 ? "match" : "matches"
+        if isComplete {
+            browser.showStatus("\(items.count) \(noun) for “\(query)”.")
+        } else {
+            browser.showStatus("Searching for “\(query)”… \(items.count) \(noun) so far.")
+        }
+    }
+
+    private static func mergeSearchResults(_ immediate: [FileItem], _ subtree: [FileItem]) -> [FileItem] {
+        var seen = Set(immediate.map { $0.url.standardizedFileURL })
+        var merged = immediate
+        for item in subtree {
+            if seen.insert(item.url.standardizedFileURL).inserted {
+                merged.append(item)
+            }
+        }
+        return merged.sorted { lhs, rhs in
+            let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
+            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+            return lhs.url.absoluteString < rhs.url.absoluteString
         }
     }
 
@@ -586,26 +629,41 @@ final class ExplorerTabController: NSViewController {
         submit(operation)
     }
 
-    private func submit(_ operation: FileOperation, completion: ((FileOperationResult) -> Void)? = nil) {
+    private func submit(
+        _ operation: FileOperation,
+        completion: ((FileOperationResult) -> Void)? = nil,
+        finished: (() -> Void)? = nil
+    ) {
         let queue = operationQueue
         let resolver: (any FileConflictResolving)? = operation.conflictPolicy == .ask
             ? FileConflictCoordinator(window: view.window)
             : nil
         Task { [weak self] in
             let id = await queue.submit(operation, conflictResolver: resolver)
-            guard let self else { return }
+            guard let self else {
+                finished?()
+                return
+            }
             self.pendingOperationIDs.insert(id)
             self.browser.showStatus("\(operation.kind.rawValue) queued.")
             do {
                 let result = try await queue.result(for: id)
-                guard self.pendingOperationIDs.remove(id) != nil else { return }
+                guard self.pendingOperationIDs.remove(id) != nil else {
+                    finished?()
+                    return
+                }
                 self.onOperationCompleted?(operation, result)
                 completion?(result)
                 self.browser.showStatus(Self.completionStatus(for: operation.kind, result: result))
                 self.perform(.refresh)
+                finished?()
             } catch {
-                guard self.pendingOperationIDs.remove(id) != nil else { return }
+                guard self.pendingOperationIDs.remove(id) != nil else {
+                    finished?()
+                    return
+                }
                 self.browser.showStatus(error.localizedDescription)
+                finished?()
             }
         }
     }
@@ -635,6 +693,48 @@ final class ExplorerTabController: NSViewController {
             operation = .move(sources: drop.urls, to: destination, conflictPolicy: .ask)
         }
         submit(operation)
+        return true
+    }
+
+    private func accept(_ drop: BrowserPromisedFileDrop) -> Bool {
+        guard let destination = drop.destinationURL ?? currentDirectoryURL else { return false }
+        guard !drop.receivers.isEmpty else { return false }
+        let staging: URL
+        do {
+            staging = try FilePromiseDropCoordinator.makeStagingDirectory()
+        } catch {
+            browser.showStatus(error.localizedDescription)
+            return false
+        }
+
+        let receivers = drop.receivers
+        let queue = filePromiseQueue
+        browser.showStatus("Receiving dropped files…")
+        Task { [weak self] in
+            do {
+                let urls = try await FilePromiseDropCoordinator.receivePromisedFiles(
+                    receivers,
+                    into: staging,
+                    operationQueue: queue
+                )
+                guard let self else {
+                    try? FileManager.default.removeItem(at: staging)
+                    return
+                }
+                guard !urls.isEmpty else {
+                    self.browser.showStatus(FilePromiseDropError.empty.localizedDescription)
+                    try? FileManager.default.removeItem(at: staging)
+                    return
+                }
+                self.submit(
+                    .move(sources: urls, to: destination, conflictPolicy: .ask),
+                    finished: { try? FileManager.default.removeItem(at: staging) }
+                )
+            } catch {
+                self?.browser.showStatus(error.localizedDescription)
+                try? FileManager.default.removeItem(at: staging)
+            }
+        }
         return true
     }
 

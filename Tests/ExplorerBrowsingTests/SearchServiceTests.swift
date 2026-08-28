@@ -75,6 +75,111 @@ final class SearchServiceTests: XCTestCase {
             XCTAssertEqual(error, .cancelled)
         }
     }
+
+    func testSpotlightSearchMapsIndexedURLsAndSkipsHiddenDescendants() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+        try makeFile(named: "needle.txt", in: root)
+        let hidden = root.appendingPathComponent(".secret", isDirectory: true)
+        try fileManager.createDirectory(at: hidden, withIntermediateDirectories: false)
+        try makeFile(named: "needle-hidden.txt", in: hidden)
+        let outside = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: outside) }
+        try makeFile(named: "needle-outside.txt", in: outside)
+
+        let spotlight = FakeSpotlight(urls: [
+            root.appendingPathComponent("needle.txt"),
+            hidden.appendingPathComponent("needle-hidden.txt"),
+            outside.appendingPathComponent("needle-outside.txt"),
+            root
+        ])
+        let service = SearchService(spotlight: spotlight)
+        let results = try await service.search(
+            strategy: .spotlight,
+            root: root,
+            query: SearchQuery(text: "needle")
+        )
+        XCTAssertEqual(results.map(\.name), ["needle.txt"])
+    }
+
+    func testSubtreeSearchFallsBackWhenSpotlightIsEmptyOrUnavailable() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+        let child = root.appendingPathComponent("child", isDirectory: true)
+        try fileManager.createDirectory(at: child, withIntermediateDirectories: false)
+        try makeFile(named: "needle.txt", in: child)
+
+        let emptyIndex = SearchService(spotlight: FakeSpotlight(urls: []))
+        let recovered = try await emptyIndex.searchSubtree(at: root, matching: SearchQuery(text: "needle"))
+        XCTAssertEqual(recovered.map(\.name), ["needle.txt"])
+
+        let failing = SearchService(spotlight: FakeSpotlight(error: SearchServiceError.unavailable(root, code: 1)))
+        let fallback = try await failing.searchSubtree(at: root, matching: SearchQuery(text: "needle"))
+        XCTAssertEqual(fallback.map(\.name), ["needle.txt"])
+    }
+
+    func testSubtreeSearchKeepsSpotlightHitsWithoutWalkingTheRestOfTheTree() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+        try makeFile(named: "needle-indexed.txt", in: root)
+        try makeFile(named: "needle-unindexed.txt", in: root)
+
+        let service = SearchService(spotlight: FakeSpotlight(urls: [root.appendingPathComponent("needle-indexed.txt")]))
+        let results = try await service.searchSubtree(at: root, matching: SearchQuery(text: "needle"))
+        XCTAssertEqual(results.map(\.name), ["needle-indexed.txt"])
+    }
+
+    func testSpotlightPredicateEscapesLikeWildcards() {
+        XCTAssertEqual(SpotlightMetadataPredicate.likePattern(for: "a*b?c[d]"), "*a\\*b\\?c\\[d]*")
+        let predicate = SpotlightMetadataPredicate.make(for: SearchQuery(text: "Report"))
+        XCTAssertTrue(predicate.predicateFormat.contains("kMDItemFSName"))
+    }
+
+    func testCancelledSpotlightSearchFailsBeforeQueryingTheIndex() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+        let spotlight = FakeSpotlight(urls: [root.appendingPathComponent("needle.txt")])
+        let service = SearchService(spotlight: spotlight)
+        withUnsafeCurrentTask { $0?.cancel() }
+
+        do {
+            _ = try await service.search(strategy: .spotlight, root: root, query: SearchQuery(text: "needle"))
+            XCTFail("Expected cancellation")
+        } catch let error as SearchServiceError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        XCTAssertFalse(spotlight.wasQueried)
+    }
+}
+
+private final class FakeSpotlight: SpotlightSearching, @unchecked Sendable {
+    let urls: [URL]
+    let error: (any Error)?
+    private let lock = NSLock()
+    private var queried = false
+
+    init(urls: [URL] = [], error: (any Error)? = nil) {
+        self.urls = urls
+        self.error = error
+    }
+
+    var wasQueried: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return queried
+    }
+
+    func itemURLs(matching query: SearchQuery, scopedTo root: URL) async throws -> [URL] {
+        markQueried()
+        if let error { throw error }
+        return urls
+    }
+
+    private nonisolated func markQueried() {
+        lock.lock()
+        queried = true
+        lock.unlock()
+    }
 }
 
 private extension SearchServiceTests {

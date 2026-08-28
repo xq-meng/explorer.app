@@ -3,9 +3,9 @@ import ExplorerCore
 
 /// The search backends understood by ``SearchService``.
 ///
-/// Spotlight is intentionally represented but not executed in M4: wrapping
-/// `NSMetadataQuery` correctly requires a long-lived run-loop owner and a separate
-/// authorization/error model. The non-indexed recursive fallback is always available.
+/// ``SearchStrategy/spotlight`` uses ``NSMetadataQuery`` when an index is
+/// available. ``searchSubtree(at:matching:)`` falls back to recursive
+/// enumeration for unindexed volumes and Spotlight failures.
 public enum SearchStrategy: String, Sendable, Codable, Hashable {
     case immediateDirectory
     case recursiveFileSystem
@@ -54,18 +54,20 @@ public enum SearchServiceError: Error, Sendable, Equatable, LocalizedError {
             return "Search does not follow symbolic-link roots: \(url.path)"
         case let .unavailable(url, code):
             return "Cannot search \(url.path) (error \(code))."
-        case .unsupportedStrategy(.spotlight):
-            return "Spotlight search is not available yet."
         case let .unsupportedStrategy(strategy):
             return "Unsupported search strategy: \(strategy.rawValue)"
         }
     }
 }
 
-/// Cancellable name search with an immediate-snapshot path and a robust filesystem
-/// fallback for locations that are not indexed by Spotlight.
+/// Cancellable name search with an immediate-snapshot path, Spotlight, and a
+/// filesystem fallback for locations that are not indexed.
 public actor SearchService {
-    public init() {}
+    private let spotlight: any SpotlightSearching
+
+    public init(spotlight: any SpotlightSearching = SpotlightMetadataClient()) {
+        self.spotlight = spotlight
+    }
 
     /// Filters one already-loaded directory without further file-system I/O.
     public func filter(
@@ -144,23 +146,94 @@ public actor SearchService {
         return results.sorted(by: deterministicOrder)
     }
 
-    /// Allows callers to select a future backend without coupling UI code to a
-    /// particular implementation. M4 ships the first two strategies only.
+    /// Spotlight search of `root`, falling back to recursive enumeration when the
+    /// index is missing, empty, or unavailable.
+    public func searchSubtree(at root: URL, matching query: SearchQuery) async throws -> [FileItem] {
+        do {
+            let spotlightResults = try await search(strategy: .spotlight, root: root, query: query)
+            if !spotlightResults.isEmpty { return spotlightResults }
+        } catch SearchServiceError.cancelled {
+            throw SearchServiceError.cancelled
+        } catch is CancellationError {
+            throw SearchServiceError.cancelled
+        } catch {
+            // Unindexed volumes, network shares, and Spotlight outages use the
+            // recursive enumerator that is always available.
+        }
+
+        try checkCancellation()
+        return try searchRecursively(at: root, matching: query)
+    }
+
     public func search(
         strategy: SearchStrategy,
         root: URL,
         query: SearchQuery
-    ) throws -> [FileItem] {
+    ) async throws -> [FileItem] {
         switch strategy {
         case .recursiveFileSystem:
             return try searchRecursively(at: root, matching: query)
-        case .spotlight, .immediateDirectory:
+        case .spotlight:
+            return try await searchWithSpotlight(at: root, matching: query)
+        case .immediateDirectory:
             throw SearchServiceError.unsupportedStrategy(strategy)
         }
     }
 }
 
 private extension SearchService {
+    func searchWithSpotlight(at root: URL, matching query: SearchQuery) async throws -> [FileItem] {
+        try validate(query)
+        try checkCancellation()
+
+        let rootURL = root.standardizedFileURL
+        try validateRoot(rootURL)
+
+        let urls: [URL]
+        do {
+            urls = try await spotlight.itemURLs(matching: query, scopedTo: rootURL)
+        } catch is CancellationError {
+            throw SearchServiceError.cancelled
+        } catch let error as SearchServiceError {
+            throw error
+        } catch {
+            throw SearchServiceError.unavailable(rootURL, code: (error as NSError).code)
+        }
+
+        try checkCancellation()
+
+        var results: [FileItem] = []
+        results.reserveCapacity(min(query.maximumResults, urls.count))
+        let keys = FileSystemMetadata.resourceKeys
+
+        for url in urls {
+            if results.count >= query.maximumResults { break }
+            try checkCancellation()
+
+            let itemURL = url.standardizedFileURL
+            guard isDescendant(itemURL, of: rootURL) else { continue }
+            if !query.includesHiddenFiles, isHiddenPath(itemURL, under: rootURL) { continue }
+
+            let values: URLResourceValues
+            do {
+                values = try itemURL.resourceValues(forKeys: keys)
+            } catch {
+                continue
+            }
+
+            if values.isSymbolicLink == true { continue }
+
+            let item = FileSystemMetadata.item(from: itemURL, values: values)
+            if !query.includesHiddenFiles && item.isHidden { continue }
+            if matches(item.name, query: query) {
+                results.append(item)
+            }
+        }
+
+        try checkCancellation()
+        return results.sorted(by: deterministicOrder)
+    }
+
     func validate(_ query: SearchQuery) throws {
         guard !query.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SearchServiceError.emptyQuery
@@ -201,5 +274,20 @@ private extension SearchService {
         let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
         if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
         return lhs.url.absoluteString < rhs.url.absoluteString
+    }
+
+    func isDescendant(_ url: URL, of root: URL) -> Bool {
+        let rootPath = root.path
+        let itemPath = url.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        return itemPath.hasPrefix(prefix)
+    }
+
+    func isHiddenPath(_ url: URL, under root: URL) -> Bool {
+        let rootPath = root.path
+        let itemPath = url.path
+        guard itemPath.count > rootPath.count else { return false }
+        let relative = itemPath.dropFirst(rootPath.count)
+        return relative.split(separator: "/").contains { $0.hasPrefix(".") }
     }
 }
