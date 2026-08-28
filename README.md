@@ -59,6 +59,28 @@ The bundle is written to `.build/artifacts/Explorer.app`. It is suitable for
 local development; Developer ID signing, notarization, and a distributable DMG
 remain release work.
 
+## Publishing a preview release
+
+Pushing a `v*` tag runs the release workflow. It verifies that the tag matches
+`CFBundleShortVersionString`, tests and packages the app on Apple Silicon,
+publishes `Explorer-<version>-arm64.zip` as a GitHub prerelease, and updates
+`Casks/explorer-app.rb` in
+[`xq-meng/homebrew-tap`](https://github.com/xq-meng/homebrew-tap).
+
+Before publishing for the first time, add a repository Actions secret named
+`HOMEBREW_TAP_TOKEN`. Use a fine-grained personal access token limited to the
+`xq-meng/homebrew-tap` repository with **Contents: Read and write** permission.
+
+To publish after updating both version values in `Resources/Info.plist`:
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+The published preview remains ad-hoc signed and unnotarized. Homebrew users must
+follow the trust and quarantine instructions documented by the tap.
+
 ## Useful commands
 
 - `Command-L`: edit the current path

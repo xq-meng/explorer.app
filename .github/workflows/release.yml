@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out Explorer
+        uses: actions/checkout@v4
+
+      - name: Require Homebrew tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "::error::Add a HOMEBREW_TAP_TOKEN repository secret with Contents read/write access to xq-meng/homebrew-tap."
+            exit 1
+          fi
+
+      - name: Validate release version
+        id: version
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not contain a supported semantic version."
+            exit 1
+          fi
+
+          if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
+            echo "::error::Tag version $VERSION does not match Info.plist version $PLIST_VERSION."
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: swift test
+
+      - name: Package application
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          ./scripts/package-app.sh
+
+          BINARY=".build/artifacts/Explorer.app/Contents/MacOS/ExplorerApp"
+          if ! /usr/bin/file "$BINARY" | /usr/bin/grep -q "arm64"; then
+            echo "::error::Release binary is not an arm64 executable."
+            exit 1
+          fi
+
+          ARCHIVE="Explorer-${VERSION}-arm64.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
+            .build/artifacts/Explorer.app "$ARCHIVE"
+          SHA256="$(/usr/bin/shasum -a 256 "$ARCHIVE" | /usr/bin/awk '{print $1}')"
+
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$ARCHIVE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Explorer $VERSION" \
+              --generate-notes \
+              --prerelease \
+              --verify-tag
+          fi
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: xq-meng/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Homebrew Cask
+        env:
+          SHA256: ${{ steps.package.outputs.sha256 }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          CASK="homebrew-tap/Casks/explorer-app.rb"
+          TAP_README="homebrew-tap/README.md"
+
+          /usr/bin/sed -i '' -E \
+            "s/^  version \"[^\"]+\"$/  version \"${VERSION}\"/" "$CASK"
+          /usr/bin/sed -i '' -E \
+            "s/^  sha256 \"[^\"]+\"$/  sha256 \"${SHA256}\"/" "$CASK"
+          /usr/bin/sed -i '' -E \
+            "s/Explorer [^ ]+ is an unsigned/Explorer ${VERSION} is an unsigned/" \
+            "$TAP_README"
+
+          /usr/bin/grep -Fq "version \"${VERSION}\"" "$CASK"
+          /usr/bin/grep -Fq "sha256 \"${SHA256}\"" "$CASK"
+
+      - name: Push Homebrew tap update
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/explorer-app.rb README.md
+
+          if git diff --cached --quiet; then
+            echo "Homebrew tap already contains Explorer $VERSION."
+            exit 0
+          fi
+
+          git commit -m "chore: update explorer-app to ${VERSION}"
+          git push origin HEAD:main
