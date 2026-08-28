@@ -2,7 +2,7 @@ import AppKit
 import ExplorerUI
 
 @MainActor
-final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
+final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var windowControllers: [ExplorerWindowController] = []
     private let settings = ExplorerSettingsStore()
     private var preferencesWindowController: ExplorerPreferencesWindowController?
@@ -182,8 +182,8 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate {
         addMenuItem("as Details", action: #selector(showDetails(_:)), key: "1", modifiers: .command, to: viewMenu)
         addMenuItem("as Icons", action: #selector(showIcons(_:)), key: "2", modifiers: .command, to: viewMenu)
         viewMenu.addItem(.separator())
-        addMenuItem("Show Hidden Files", action: #selector(toggleHiddenFiles(_:)), key: ".", modifiers: [.command, .shift], to: viewMenu)
-        addMenuItem("Show Preview Pane", action: #selector(togglePreview(_:)), key: "p", modifiers: [.command, .shift], to: viewMenu)
+        addMenuItem("Hidden Files", action: #selector(toggleHiddenFiles(_:)), key: ".", modifiers: [.command, .shift], to: viewMenu)
+        addMenuItem("Preview Pane", action: #selector(togglePreview(_:)), key: "p", modifiers: [.command, .shift], to: viewMenu)
         addMenuItem("Quick Look", action: #selector(quickLook(_:)), key: " ", modifiers: [], to: viewMenu)
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         viewItem.submenu = viewMenu
