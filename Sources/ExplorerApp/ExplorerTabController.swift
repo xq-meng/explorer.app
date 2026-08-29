@@ -19,7 +19,6 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
     private let initialSidebarWidth: CGFloat?
     private let navigation = ExplorerTabNavigationCoordinator()
     private let files = ExplorerTabFileCoordinator()
-    private let sidebar = ExplorerTabSidebarCoordinator()
     private(set) var viewMode: BrowserViewMode
     private(set) var sortDescriptor: BrowserSortDescriptor
     private(set) var showsPreview: Bool
@@ -68,12 +67,6 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         super.init(nibName: nil, bundle: nil)
         navigation.presenter = self
         files.host = self
-        sidebar.onFolders = { [weak self] folders, parent in
-            self?.browser.displaySidebarChildren(folders, for: parent)
-        }
-        sidebar.onFailure = { [weak self] message in
-            self?.browser.showStatus(message)
-        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(fileClipboardDidChange(_:)),
@@ -133,7 +126,6 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         searchCoordinator.cancel()
         thumbnailCoordinator.cancelAll()
         navigation.cancelAll()
-        sidebar.cancelAll()
     }
 
     func setViewMode(_ mode: BrowserViewMode) {
@@ -296,10 +288,6 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         )
     }
 
-    func loadSidebarChildren(of parentURL: URL) {
-        sidebar.loadChildren(of: parentURL, showsHiddenFiles: showsHiddenFiles)
-    }
-
     private func configureCallbacks() {
         browser.onAction = { [weak self] action in
             self?.handle(action) ?? false
@@ -339,16 +327,12 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
                 .directory(navigation.url(forSubmittedPath: path, homeURL: homeURL)),
                 origin: .newLocation
             )
-        case let .expandSidebar(url):
-            loadSidebarChildren(of: url)
         case let .openLocationInNewTab(location):
             emit(.openLocationInNewTab(location))
         case let .createFolder(parent):
             files.createNewFolder(in: parent)
         case let .trash(url):
-            submit(.trash(sources: [url])) { [weak self] _ in
-                self?.loadSidebarChildren(of: url.deletingLastPathComponent())
-            }
+            submit(.trash(sources: [url]))
         case let .removeFavorite(url):
             emit(.removeFavorite(url))
         case let .addFavorite(url):

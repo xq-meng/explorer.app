@@ -208,13 +208,6 @@ public final class ExplorerBrowserViewController: NSViewController {
         sidebarController.displayRoots(locations)
     }
 
-    public func displaySidebarChildren(
-        _ locations: [BrowserSidebarLocation],
-        for parentURL: URL
-    ) {
-        sidebarController.displayChildren(locations, for: parentURL)
-    }
-
     private func displaySelection(_ rows: [BrowserFileRow]) {
         previewView.display(rows)
         var components: [String] = []

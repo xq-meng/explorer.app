@@ -40,7 +40,6 @@ protocol ExplorerTabFileWorking: AnyObject {
         completion: ((FileOperationResult) -> Void)?,
         finished: (() -> Void)?
     )
-    func loadSidebarChildren(of url: URL)
     func toggleQuickLook()
     func setCutURLs(_ urls: Set<URL>)
 }

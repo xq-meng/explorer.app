@@ -8,7 +8,6 @@ public enum BrowserAction {
     case openLocation(BrowserLocation)
     case openFileRow(BrowserFileRow)
     case submitPath(String)
-    case expandSidebar(URL)
     case openLocationInNewTab(BrowserLocation)
     case createFolder(in: URL)
     case trash(URL)

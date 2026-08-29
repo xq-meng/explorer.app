@@ -83,7 +83,6 @@ final class ExplorerTabFileCoordinator {
         host.submit(.createFolder(at: parent, name: "New Folder", conflictPolicy: .keepBoth), completion: { [weak host] result in
             guard let host,
                   let destination = result.items.first(where: { $0.status == .completed })?.destination else { return }
-            host.loadSidebarChildren(of: parent)
             guard host.currentDirectoryURL == parent else { return }
             host.selection = [destination]
             host.pendingInlineRenameURL = destination

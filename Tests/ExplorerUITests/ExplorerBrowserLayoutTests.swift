@@ -20,32 +20,38 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(allDescendants(of: controller.view, as: NSSplitView.self).count, 2)
     }
 
-    func testSidebarRequestsAndAppliesChildrenLazily() {
+    func testSidebarItemsOpenLocationsInsteadOfExpanding() {
         let controller = BrowserSidebarController()
-        let rootURL = URL(fileURLWithPath: "/tmp/sidebar-root", isDirectory: true)
-        let childURL = rootURL.appendingPathComponent("Child", isDirectory: true)
-        controller.displayRoots([BrowserSidebarLocation(title: "Root", url: rootURL, kind: .favorite)])
+        let downloads = URL(fileURLWithPath: "/tmp/Downloads", isDirectory: true)
+        let volume = URL(fileURLWithPath: "/", isDirectory: true)
+        let iCloud = URL(
+            fileURLWithPath: "/tmp/Library/Mobile Documents/com~apple~CloudDocs",
+            isDirectory: true
+        )
+        controller.displayRoots([
+            BrowserSidebarLocation(title: "Downloads", url: downloads, kind: .favorite),
+            BrowserSidebarLocation(title: "Macintosh HD", url: volume, kind: .volume),
+            BrowserSidebarLocation(title: "iCloud Drive", url: iCloud, kind: .network),
+        ])
 
-        XCTAssertEqual(controller.outlineView.numberOfRows, 2)
-        guard let root = controller.outlineView.item(atRow: 1) else {
-            return XCTFail("Expected a visible root node")
-        }
+        XCTAssertEqual(controller.outlineView.numberOfRows, 6)
+        let outline = controller.outlineView
+        XCTAssertTrue(controller.outlineView(outline, isItemExpandable: outline.item(atRow: 0)!))
+        XCTAssertFalse(controller.outlineView(outline, isItemExpandable: outline.item(atRow: 1)!))
+        XCTAssertFalse(controller.outlineView(outline, isItemExpandable: outline.item(atRow: 3)!))
+        XCTAssertFalse(controller.outlineView(outline, isItemExpandable: outline.item(atRow: 5)!))
 
-        var requestedURL: URL?
+        var opened: BrowserLocation?
         controller.onAction = { action in
-            if case let .expandSidebar(url) = action {
-                requestedURL = url
+            if case let .openLocation(location) = action {
+                opened = location
             }
         }
-        XCTAssertTrue(controller.outlineView(controller.outlineView, shouldExpandItem: root))
-        XCTAssertEqual(requestedURL, rootURL.standardizedFileURL)
-
-        controller.displayChildren(
-            [BrowserSidebarLocation(title: "Child", url: childURL)],
-            for: rootURL
-        )
-        XCTAssertEqual(controller.outlineView(controller.outlineView, numberOfChildrenOfItem: root), 1)
-        XCTAssertGreaterThanOrEqual(controller.outlineView.numberOfRows, 2)
+        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        if let action = outline.action {
+            _ = (outline.target as AnyObject?)?.perform(action, with: outline)
+        }
+        XCTAssertEqual(opened, .directory(downloads.standardizedFileURL))
     }
 
     func testSidebarPlacesNetworkSectionAfterVolumes() {

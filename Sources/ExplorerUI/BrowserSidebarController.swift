@@ -1,7 +1,7 @@
 import AppKit
 
-/// Owns the lazy NSOutlineView presentation. Child discovery is delegated to
-/// the application layer so this view controller never enumerates the disk.
+/// Owns the source-list of folder shortcuts. Clicking an item opens that
+/// location in the main pane; the sidebar never expands into a directory tree.
 @MainActor
 final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let outlineView = NSOutlineView()
@@ -9,7 +9,6 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     var viewState = BrowserViewState.empty
 
     private var groups: [SidebarGroup] = []
-    private var requestedURLs = Set<URL>()
 
     override init() {
         super.init()
@@ -26,7 +25,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         outlineView.dataSource = self
         outlineView.target = self
         outlineView.action = #selector(selectLocation(_:))
-        outlineView.setAccessibilityLabel("Folder tree")
+        outlineView.setAccessibilityLabel("Places")
 
         let menu = NSMenu(title: "Folder")
         menu.delegate = self
@@ -99,7 +98,6 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
             group.children = sectionLocations.map { location in
                 if let node = existingNodes[location.location] {
                     node.location = location
-                    node.parent = nil
                     return node
                 }
                 return SidebarNode(location: location)
@@ -124,30 +122,8 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         outlineView.action = action
     }
 
-    func displayChildren(_ locations: [BrowserSidebarLocation], for parentURL: URL) {
-        guard let parent = findNode(.directory(parentURL.standardizedFileURL)) else { return }
-        let existing = Dictionary(uniqueKeysWithValues: (parent.children ?? []).map { ($0.location.location, $0) })
-        parent.children = locations.map { location in
-            if let node = existing[location.location] {
-                node.location = location
-                return node
-            }
-            return SidebarNode(location: location, parent: parent)
-        }
-        requestedURLs.remove(parentURL.standardizedFileURL)
-        outlineView.reloadItem(parent, reloadChildren: true)
-        if !(parent.children?.isEmpty ?? true) { outlineView.expandItem(parent) }
-    }
-
     private func findNode(_ location: BrowserLocation) -> SidebarNode? {
-        func visit(_ nodes: [SidebarNode]) -> SidebarNode? {
-            for node in nodes {
-                if node.location.location == location { return node }
-                if let children = node.children, let match = visit(children) { return match }
-            }
-            return nil
-        }
-        return visit(groups.flatMap(\.children))
+        groups.flatMap(\.children).first { $0.location.location == location }
     }
 
     @objc private func selectLocation(_ sender: Any?) {
@@ -239,31 +215,16 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if let group = item as? SidebarGroup { return group.children.count }
-        if let node = item as? SidebarNode { return node.children?.count ?? 0 }
         return item == nil ? groups.count : 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         if let group = item as? SidebarGroup { return group.children[index] }
-        if let node = item as? SidebarNode { return node.children![index] }
         return groups[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        if item is SidebarGroup { return true }
-        guard let node = item as? SidebarNode else { return false }
-        if node.location.kind == .computer { return false }
-        return node.children == nil || !(node.children?.isEmpty ?? true)
-    }
-
-    func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
-        if item is SidebarGroup { return true }
-        guard let node = item as? SidebarNode else { return false }
-        if node.children == nil, let url = node.location.directoryURL,
-           requestedURLs.insert(url).inserted {
-            emit(.expandSidebar(url))
-        }
-        return true
+        item is SidebarGroup
     }
 
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
@@ -435,11 +396,8 @@ private final class SidebarGroup: NSObject {
 @MainActor
 private final class SidebarNode: NSObject {
     var location: BrowserSidebarLocation
-    weak var parent: SidebarNode?
-    var children: [SidebarNode]?
 
-    init(location: BrowserSidebarLocation, parent: SidebarNode? = nil) {
+    init(location: BrowserSidebarLocation) {
         self.location = location
-        self.parent = parent
     }
 }
