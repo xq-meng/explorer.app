@@ -7,18 +7,26 @@ public enum BrowserPermanentDeleteAlert {
         case delete
     }
 
+    enum Activation: Equatable, Sendable {
+        case confirm
+        case cancel
+    }
+
     public static func confirm(
         itemCount: Int,
         itemName: String?,
-        in _: NSWindow?
+        in window: NSWindow?
     ) async -> Bool {
         let alert = makeAlert(itemCount: itemCount, itemName: itemName)
         let navigation = PermanentDeleteAlertKeyNavigation(alert: alert)
         navigation.install()
         defer { navigation.invalidate() }
-        // App-modal so Return reaches the default Cancel button. Sheets can
-        // leave the file list as first responder, which swallows Enter.
-        let response = alert.runModal()
+        let response: NSApplication.ModalResponse
+        if let window {
+            response = await alert.beginSheetModal(for: window)
+        } else {
+            response = alert.runModal()
+        }
         return response == .alertSecondButtonReturn
     }
 
@@ -67,6 +75,38 @@ public enum BrowserPermanentDeleteAlert {
         return nil
     }
 
+    /// Return confirms the focused button; Escape always cancels. Sheets keep
+    /// these even when the file list remains first responder.
+    nonisolated static func activation(
+        charactersIgnoringModifiers: String?,
+        specialKey: NSEvent.SpecialKey?,
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Activation? {
+        let modifiers = modifiers.intersection([.shift, .command, .option, .control])
+        guard modifiers.isEmpty else { return nil }
+        if isReturnKey(
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            specialKey: specialKey,
+            keyCode: keyCode
+        ) {
+            return .confirm
+        }
+        if isEscapeKey(charactersIgnoringModifiers: charactersIgnoringModifiers, keyCode: keyCode) {
+            return .cancel
+        }
+        return nil
+    }
+
+    /// Sheet key events often arrive with the document window, not the alert.
+    nonisolated static func shouldHandleEvent(
+        eventWindowID: ObjectIdentifier?,
+        alertWindowID: ObjectIdentifier,
+        sheetParentID: ObjectIdentifier?
+    ) -> Bool {
+        eventWindowID == alertWindowID || eventWindowID == sheetParentID
+    }
+
     static func applyFocus(_ focus: Focus, to alert: NSAlert) {
         let cancel = alert.buttons[0]
         let delete = alert.buttons[1]
@@ -84,6 +124,23 @@ public enum BrowserPermanentDeleteAlert {
         keyCode == 48
             || charactersIgnoringModifiers == "\t"
             || charactersIgnoringModifiers == "\u{19}"
+    }
+
+    nonisolated private static func isReturnKey(
+        charactersIgnoringModifiers: String?,
+        specialKey: NSEvent.SpecialKey?,
+        keyCode: UInt16
+    ) -> Bool {
+        keyCode == 36
+            || keyCode == 76
+            || charactersIgnoringModifiers == "\r"
+            || charactersIgnoringModifiers == "\u{3}"
+            || specialKey == .carriageReturn
+            || specialKey == .enter
+    }
+
+    nonisolated private static func isEscapeKey(charactersIgnoringModifiers: String?, keyCode: UInt16) -> Bool {
+        keyCode == 53 || charactersIgnoringModifiers == "\u{1b}"
     }
 }
 
@@ -137,7 +194,31 @@ private final class PermanentDeleteAlertKeyNavigation {
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags
     ) -> Bool {
-        guard eventWindowID == ObjectIdentifier(alert.window) else { return false }
+        let parentID = alert.window.sheetParent.map { ObjectIdentifier($0) }
+        guard BrowserPermanentDeleteAlert.shouldHandleEvent(
+            eventWindowID: eventWindowID,
+            alertWindowID: ObjectIdentifier(alert.window),
+            sheetParentID: parentID
+        ) else { return false }
+
+        if let activation = BrowserPermanentDeleteAlert.activation(
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            specialKey: specialKey,
+            keyCode: keyCode,
+            modifiers: modifiers
+        ) {
+            switch activation {
+            case .confirm:
+                let button = focused == .cancel ? alert.buttons[0] : alert.buttons[1]
+                button.performClick(nil)
+            case .cancel:
+                focused = .cancel
+                BrowserPermanentDeleteAlert.applyFocus(.cancel, to: alert)
+                alert.buttons[0].performClick(nil)
+            }
+            return true
+        }
+
         guard let next = BrowserPermanentDeleteAlert.nextFocus(
             current: focused,
             charactersIgnoringModifiers: charactersIgnoringModifiers,

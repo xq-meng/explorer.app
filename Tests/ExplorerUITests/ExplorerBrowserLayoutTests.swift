@@ -32,7 +32,11 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         }
 
         var requestedURL: URL?
-        controller.onExpansionRequest = { requestedURL = $0 }
+        controller.onAction = { action in
+            if case let .expandSidebar(url) = action {
+                requestedURL = url
+            }
+        }
         XCTAssertTrue(controller.outlineView(controller.outlineView, shouldExpandItem: root))
         XCTAssertEqual(requestedURL, rootURL.standardizedFileURL)
 
@@ -80,8 +84,8 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         let home = URL(fileURLWithPath: "/tmp/sidebar-home", isDirectory: true)
         controller.displayRoots([
             BrowserSidebarLocation(
-                title: BrowserComputerLocation.title,
-                url: BrowserComputerLocation.url,
+                title: BrowserLocation.computerTitle,
+                location: .computer,
                 kind: .computer
             ),
             BrowserSidebarLocation(title: "Home", url: home, kind: .favorite),
@@ -120,7 +124,7 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         }
         outlineView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
 
-        controller.displayPath("/tmp/an-independent-location")
+        controller.displayLocation(.directory(URL(fileURLWithPath: "/tmp/an-independent-location")))
 
         XCTAssertEqual(outlineView.selectedRow, 1)
     }
@@ -159,6 +163,34 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertEqual(previewSplitView.arrangedSubviews.count, 2)
     }
 
+    func testBrowserChromeEmitsASingleActionStream() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1_080, height: 680)
+        controller.view.layoutSubtreeIfNeeded()
+
+        var actions: [String] = []
+        controller.onAction = { action in
+            switch action {
+            case .navigation(.back): actions.append("back")
+            case .setViewMode(.icons): actions.append("icons")
+            case .openLocation(.computer): actions.append("computer")
+            default: break
+            }
+            return true
+        }
+
+        let back = allDescendants(of: controller.view, as: NSButton.self)
+            .first { $0.accessibilityLabel() == "Back" }
+        back?.performClick(nil)
+        let viewMode = allDescendants(of: controller.view, as: NSSegmentedControl.self)
+            .first { $0.identifier?.rawValue == "browser.viewMode" }
+        viewMode?.selectedSegment = 1
+        viewMode?.performClick(nil)
+
+        XCTAssertEqual(actions, ["back", "icons"])
+    }
+
     func testTableSortDescriptorRoutesAStableBrowserSortIntent() {
         let controller = ExplorerBrowserViewController()
         controller.loadView()
@@ -168,7 +200,12 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         }
 
         var received: BrowserSortDescriptor?
-        controller.onSortSelection = { received = $0 }
+        controller.onAction = { action in
+            if case let .setSort(descriptor) = action {
+                received = descriptor
+            }
+            return true
+        }
         let previous = table.sortDescriptors
         table.sortDescriptors = [NSSortDescriptor(key: "size", ascending: false)]
         (table.delegate as? BrowserFileContentController)?
@@ -211,7 +248,12 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertEqual(collection.selectionIndexes, IndexSet(integer: 1))
 
         var selectedURLs: Set<URL> = []
-        controller.onSelectionChange = { selectedURLs = $0 }
+        controller.onAction = { action in
+            if case let .selectionChange(urls) = action {
+                selectedURLs = urls
+            }
+            return true
+        }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         contentController.tableViewSelectionDidChange(
             Notification(name: NSTableView.selectionDidChangeNotification, object: table)
@@ -461,6 +503,81 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertEqual(alert.window.defaultButtonCell, alert.buttons[0].cell)
     }
 
+    func testPermanentDeleteAlertReturnConfirmsFocusedButtonAndEscapeCancels() {
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.activation(
+                charactersIgnoringModifiers: "\r",
+                specialKey: .carriageReturn,
+                keyCode: 36,
+                modifiers: []
+            ),
+            .confirm
+        )
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.activation(
+                charactersIgnoringModifiers: "\u{3}",
+                specialKey: .enter,
+                keyCode: 76,
+                modifiers: []
+            ),
+            .confirm
+        )
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.activation(
+                charactersIgnoringModifiers: "\u{1b}",
+                specialKey: nil,
+                keyCode: 53,
+                modifiers: []
+            ),
+            .cancel
+        )
+        XCTAssertNil(
+            BrowserPermanentDeleteAlert.activation(
+                charactersIgnoringModifiers: "\t",
+                specialKey: nil,
+                keyCode: 48,
+                modifiers: []
+            )
+        )
+    }
+
+    func testPermanentDeleteAlertHandlesKeyEventsFromTheSheetParentWindow() {
+        let alertWindow = NSObject()
+        let parentWindow = NSObject()
+        let otherWindow = NSObject()
+        let alertID = ObjectIdentifier(alertWindow)
+        let parentID = ObjectIdentifier(parentWindow)
+        let otherID = ObjectIdentifier(otherWindow)
+        XCTAssertTrue(
+            BrowserPermanentDeleteAlert.shouldHandleEvent(
+                eventWindowID: parentID,
+                alertWindowID: alertID,
+                sheetParentID: parentID
+            )
+        )
+        XCTAssertTrue(
+            BrowserPermanentDeleteAlert.shouldHandleEvent(
+                eventWindowID: alertID,
+                alertWindowID: alertID,
+                sheetParentID: parentID
+            )
+        )
+        XCTAssertFalse(
+            BrowserPermanentDeleteAlert.shouldHandleEvent(
+                eventWindowID: otherID,
+                alertWindowID: alertID,
+                sheetParentID: parentID
+            )
+        )
+        XCTAssertFalse(
+            BrowserPermanentDeleteAlert.shouldHandleEvent(
+                eventWindowID: parentID,
+                alertWindowID: alertID,
+                sheetParentID: nil
+            )
+        )
+    }
+
     func testDeleteKeyMovesToTrashAndShiftDeleteDeletesPermanently() {
         XCTAssertEqual(
             BrowserFileKeyboard.command(
@@ -496,11 +613,36 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertFalse(bar.isEditingPath)
     }
 
+    func testBreadcrumbBarShowsICloudDriveTrail() {
+        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
+        let cloudDocs = URL(
+            fileURLWithPath: "/Users/demo/Library/Mobile Documents/com~apple~CloudDocs",
+            isDirectory: true
+        )
+        let stash = URL(
+            fileURLWithPath: "/Users/demo/Library/Mobile Documents/iCloud~ws~stash~icloud/Documents",
+            isDirectory: true
+        )
+        bar.display(
+            .directory(stash),
+            trail: [
+                BrowserPathComponent(title: "iCloud Drive", location: .directory(cloudDocs)),
+                BrowserPathComponent(title: "stash", location: .directory(stash)),
+            ]
+        )
+        let titles = allDescendants(of: bar, as: NSButton.self).map(\.title)
+        XCTAssertEqual(titles.filter { $0 == "iCloud Drive" || $0 == "stash" }, ["iCloud Drive", "stash"])
+        XCTAssertFalse(titles.contains("Mobile Documents"))
+    }
+
     func testBreadcrumbBarShowsMyComputerForTheHomePage() {
         let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
-        bar.display(BrowserComputerLocation.url)
+        bar.display(.computer)
         let titles = allDescendants(of: bar, as: NSButton.self).map(\.title)
-        XCTAssertEqual(titles.filter { $0 == BrowserComputerLocation.title }, [BrowserComputerLocation.title])
+        XCTAssertEqual(
+            titles.filter { $0 == BrowserLocation.computerTitle },
+            [BrowserLocation.computerTitle]
+        )
         XCTAssertFalse(titles.contains("/"))
     }
 
@@ -582,7 +724,12 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         }
 
         var opened: URL?
-        controller.onHomePageOpen = { opened = $0 }
+        controller.onAction = { action in
+            if case let .openLocation(.directory(url)) = action {
+                opened = url
+            }
+            return true
+        }
         second.mouseDown(with: mouseDownEvent(clickCount: 1))
         XCTAssertNil(opened)
         XCTAssertTrue(second.isSelected)
@@ -626,8 +773,11 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
             caption,
             "\(ByteCountFormatter.string(fromByteCount: 128_000_000_000, countStyle: .file)) free of \(ByteCountFormatter.string(fromByteCount: 512_000_000_000, countStyle: .file))"
         )
-        XCTAssertTrue(BrowserComputerLocation.matches(BrowserComputerLocation.url))
-        XCTAssertFalse(BrowserComputerLocation.matches(URL(fileURLWithPath: "/")))
+        XCTAssertEqual(BrowserLocation.computer.directoryURL, nil)
+        XCTAssertEqual(
+            BrowserLocation.directory(URL(fileURLWithPath: "/")).directoryURL,
+            URL(fileURLWithPath: "/").standardizedFileURL
+        )
     }
 
     func testConflictAlertHidesApplyToAllForTheLastItem() {

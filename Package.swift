@@ -42,5 +42,9 @@ let package = Package(
             name: "ExplorerUITests",
             dependencies: ["ExplorerUI"]
         ),
+        .testTarget(
+            name: "ExplorerAppTests",
+            dependencies: ["ExplorerApp"]
+        ),
     ]
 )

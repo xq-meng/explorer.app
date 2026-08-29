@@ -4,14 +4,15 @@ import AppKit
 /// It deals only in file URLs; validation remains in the application layer.
 @MainActor
 final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
-    var onNavigate: ((URL) -> Void)?
+    var onNavigate: ((BrowserLocation) -> Void)?
     var onSubmitPath: ((String) -> Void)?
 
     private let componentStack = NSStackView()
     private let scrollView = NSScrollView()
     private let pathField = NSTextField()
     private let editButton = NSButton()
-    private var displayedURL = URL(fileURLWithPath: "/")
+    private var displayedLocation = BrowserLocation.directory(URL(fileURLWithPath: "/"))
+    private var displayedTrail: [BrowserPathComponent]?
     private var outsideClickMonitor: Any?
 
     override init(frame frameRect: NSRect) {
@@ -80,7 +81,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(beginEditingPath(_:)))
         doubleClick.numberOfClicksRequired = 2
         scrollView.addGestureRecognizer(doubleClick)
-        display(URL(fileURLWithPath: "/"))
+        display(.directory(URL(fileURLWithPath: "/")))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -92,14 +93,19 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         }
     }
 
-    func display(_ url: URL) {
-        displayedURL = BrowserComputerLocation.matches(url) ? BrowserComputerLocation.url : url.standardizedFileURL
+    func display(_ location: BrowserLocation, trail: [BrowserPathComponent]? = nil) {
+        displayedLocation = location
+        displayedTrail = trail
         pathField.stringValue = pathFieldText
         rebuildComponents()
     }
 
+    func display(_ url: URL) {
+        display(.directory(url.standardizedFileURL))
+    }
+
     private var pathFieldText: String {
-        BrowserComputerLocation.matches(displayedURL) ? "" : displayedURL.path
+        displayedLocation.directoryURL?.path ?? ""
     }
 
     func focusAddressField() {
@@ -114,9 +120,9 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
             $0.removeFromSuperview()
         }
 
-        if BrowserComputerLocation.matches(displayedURL) {
+        if displayedLocation == .computer {
             componentStack.addArrangedSubview(
-                makeComponentButton(title: BrowserComputerLocation.title, url: displayedURL)
+                makeComponentButton(title: BrowserLocation.computerTitle, location: .computer)
             )
             componentStack.layoutSubtreeIfNeeded()
             scrollView.contentView.scroll(to: .zero)
@@ -124,6 +130,20 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
             return
         }
 
+        if let trail = displayedTrail, !trail.isEmpty {
+            for (index, component) in trail.enumerated() {
+                if index > 0 { componentStack.addArrangedSubview(makeSeparator()) }
+                componentStack.addArrangedSubview(
+                    makeComponentButton(title: component.title, location: component.location)
+                )
+            }
+            componentStack.layoutSubtreeIfNeeded()
+            scrollView.contentView.scroll(to: NSPoint(x: max(0, componentStack.fittingSize.width - scrollView.contentSize.width), y: 0))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            return
+        }
+
+        guard let displayedURL = displayedLocation.directoryURL else { return }
         let components = displayedURL.pathComponents
         var cursor = URL(fileURLWithPath: "/", isDirectory: true)
         for (index, component) in components.enumerated() {
@@ -132,20 +152,27 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
                 componentStack.addArrangedSubview(makeSeparator())
             }
             let title = component == "/" ? FileManager.default.displayName(atPath: "/") : component
-            componentStack.addArrangedSubview(makeComponentButton(title: title, url: cursor))
+            componentStack.addArrangedSubview(
+                makeComponentButton(title: title, location: .directory(cursor))
+            )
         }
         componentStack.layoutSubtreeIfNeeded()
         scrollView.contentView.scroll(to: NSPoint(x: max(0, componentStack.fittingSize.width - scrollView.contentSize.width), y: 0))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    private func makeComponentButton(title: String, url: URL) -> NSButton {
-        let button = BreadcrumbButton(title: title, url: url, target: self, action: #selector(selectComponent(_:)))
+    private func makeComponentButton(title: String, location: BrowserLocation) -> NSButton {
+        let button = BreadcrumbButton(
+            title: title,
+            location: location,
+            target: self,
+            action: #selector(selectComponent(_:))
+        )
         button.bezelStyle = .inline
         button.isBordered = false
         button.font = .systemFont(ofSize: 13)
         button.lineBreakMode = .byTruncatingMiddle
-        button.toolTip = url.path
+        button.toolTip = location.directoryURL?.path ?? BrowserLocation.computerTitle
         button.setAccessibilityLabel("Go to \(title)")
         return button
     }
@@ -163,8 +190,8 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     }
 
     @objc private func selectComponent(_ sender: NSButton) {
-        guard let url = (sender as? BreadcrumbButton)?.url else { return }
-        onNavigate?(url)
+        guard let location = (sender as? BreadcrumbButton)?.location else { return }
+        onNavigate?(location)
     }
 
     @objc private func beginEditingPath(_ sender: Any?) {
@@ -235,10 +262,10 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
 }
 
 private final class BreadcrumbButton: NSButton {
-    let url: URL
+    let location: BrowserLocation
 
-    init(title: String, url: URL, target: AnyObject?, action: Selector?) {
-        self.url = url.standardizedFileURL
+    init(title: String, location: BrowserLocation, target: AnyObject?, action: Selector?) {
+        self.location = location
         super.init(frame: .zero)
         self.title = title
         self.target = target

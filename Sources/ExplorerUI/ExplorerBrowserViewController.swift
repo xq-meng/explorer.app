@@ -6,36 +6,11 @@ import AppKit
 /// rendering and interaction are delegated to ``BrowserFileContentController``.
 @MainActor
 public final class ExplorerBrowserViewController: NSViewController {
-    public var onNavigationCommand: ((BrowserNavigationCommand) -> Void)?
-    public var onViewModeSelection: ((BrowserViewMode) -> Void)?
-    public var onSortSelection: ((BrowserSortDescriptor) -> Void)?
-    public var onPathSubmission: ((String) -> Void)?
-    public var onBreadcrumbSelection: ((URL) -> Void)?
-    public var onSidebarLocationSelection: ((BrowserSidebarLocation) -> Void)?
-    public var onSidebarExpansionRequest: ((URL) -> Void)?
-    public var onOpenSidebarLocationInNewTab: ((URL) -> Void)?
-    public var onCreateFolderInSidebarLocation: ((URL) -> Void)?
-    public var onMoveSidebarLocationToTrash: ((URL) -> Void)?
-    public var onRemoveSidebarFavorite: ((URL) -> Void)?
-    public var onAddSidebarFavorite: ((URL) -> Void)?
-    public var onCopySidebarPath: ((URL) -> Void)?
-    public var onRevealSidebarInFinder: ((URL) -> Void)?
-    public var canAddSidebarFavorite: ((URL) -> Bool)?
-    public var onOpenFileRow: ((BrowserFileRow) -> Void)?
-    public var onHomePageOpen: ((URL) -> Void)?
-    public var onRenameSubmission: ((URL, String) -> Void)?
-    public var onSelectionChange: ((Set<URL>) -> Void)?
-    public var onSidebarWidthChange: ((CGFloat) -> Void)?
-    public var onSearchQueryChange: ((String) -> Void)?
-    public var onSearchClear: (() -> Void)?
-    public var onThumbnailRequest: ((URL) -> Void)?
-    public var onThumbnailCancellation: ((URL) -> Void)?
-    public var onFileCommand: ((BrowserFileCommand) -> Void)?
-    public var canPerformFileCommand: ((BrowserFileCommand) -> Bool)?
-    public var contextMenuState: (() -> BrowserContextMenuState)?
-    public var onFileURLDrop: ((BrowserFileDrop) -> Bool)?
-    public var onPromisedFileDrop: ((BrowserPromisedFileDrop) -> Bool)?
-    public var canAcceptFileURLDrop: (() -> Bool)?
+    /// Single event outlet. The return value is used only for drop actions.
+    public var onAction: ((BrowserAction) -> Bool)?
+    public var viewState = BrowserViewState.empty {
+        didSet { applyViewState() }
+    }
 
     private let breadcrumbBar = BrowserBreadcrumbBar()
     private let searchField = NSSearchField()
@@ -46,39 +21,19 @@ public final class ExplorerBrowserViewController: NSViewController {
     private let previewView = BrowserPreviewView()
     private lazy var homePageController: BrowserHomePageController = {
         let controller = BrowserHomePageController()
-        controller.onOpenLocation = { [weak self] url in self?.onHomePageOpen?(url) }
+        controller.onOpenLocation = { [weak self] url in
+            _ = self?.emit(.openLocation(.directory(url)))
+        }
         return controller
     }()
     private lazy var fileContentController: BrowserFileContentController = {
         let controller = BrowserFileContentController()
-        controller.onOpenFileRow = { [weak self] row in self?.onOpenFileRow?(row) }
-        controller.onRenameSubmission = { [weak self] url, name in
-            self?.onRenameSubmission?(url, name)
+        controller.viewState = viewState
+        controller.onAction = { [weak self] action in
+            self?.emit(action) ?? false
         }
-        controller.onSelectionChange = { [weak self] urls in self?.onSelectionChange?(urls) }
         controller.onSelectionPresentationChange = { [weak self] rows in
             self?.displaySelection(rows)
-        }
-        controller.onSortSelection = { [weak self] descriptor in
-            self?.onSortSelection?(descriptor)
-        }
-        controller.onThumbnailRequest = { [weak self] url in self?.onThumbnailRequest?(url) }
-        controller.onThumbnailCancellation = { [weak self] url in
-            self?.onThumbnailCancellation?(url)
-        }
-        controller.onFileCommand = { [weak self] command in self?.onFileCommand?(command) }
-        controller.onNavigationCommand = { [weak self] command in
-            self?.onNavigationCommand?(command)
-        }
-        controller.contextMenuState = { [weak self] in
-            self?.contextMenuState?() ?? .empty
-        }
-        controller.onFileURLDrop = { [weak self] drop in self?.onFileURLDrop?(drop) ?? false }
-        controller.onPromisedFileDrop = { [weak self] drop in
-            self?.onPromisedFileDrop?(drop) ?? false
-        }
-        controller.canAcceptFileURLDrop = { [weak self] in
-            self?.canAcceptFileURLDrop?() ?? false
         }
         return controller
     }()
@@ -115,17 +70,33 @@ public final class ExplorerBrowserViewController: NSViewController {
             return true
         }
         guard event.charactersIgnoringModifiers == " ", modifiers.isEmpty,
-              canPerformFileCommand?(.quickLook) == true else {
+              viewState.canPerform(.quickLook) else {
             return super.performKeyEquivalent(with: event)
         }
-        onFileCommand?(.quickLook)
+        _ = emit(.file(.quickLook))
         return true
     }
 
-    /// Updates the visible path after a navigation coordinator accepts it.
-    public func displayPath(_ path: String) {
-        breadcrumbBar.display(URL(fileURLWithPath: path).standardizedFileURL)
-        showStatus("Showing \(path)")
+    /// Updates the visible location after a navigation coordinator accepts it.
+    public func displayLocation(_ location: BrowserLocation, trail: [BrowserPathComponent]? = nil) {
+        breadcrumbBar.display(location, trail: trail)
+        if let url = location.directoryURL {
+            showStatus("Showing \(url.path)")
+        }
+    }
+
+    public func beginLeavingHomePage(loading location: BrowserLocation) {
+        homePageController.view.isHidden = true
+        fileContentController.view.isHidden = false
+        fileContentController.display([], selecting: [])
+        setViewModeControlVisible(true)
+        breadcrumbBar.display(location, trail: nil)
+        if let url = location.directoryURL {
+            showStatus("Loading \(url.path)…")
+        } else {
+            showStatus("Loading…")
+        }
+        statusSummaryLabel.stringValue = ""
     }
 
     public func displayHomePage(_ model: BrowserHomePageModel) {
@@ -133,25 +104,15 @@ public final class ExplorerBrowserViewController: NSViewController {
         homePageController.display(model)
         homePageController.view.isHidden = false
         fileContentController.view.isHidden = true
-        breadcrumbBar.display(BrowserComputerLocation.url)
+        breadcrumbBar.display(.computer)
         showStatus("Home view")
         statusSummaryLabel.stringValue = ""
         previewView.display([])
         setViewModeControlVisible(false)
     }
 
-    public func beginLeavingHomePage(loadingPath: String) {
-        homePageController.view.isHidden = true
-        fileContentController.view.isHidden = false
-        fileContentController.display([], selecting: [])
-        setViewModeControlVisible(true)
-        breadcrumbBar.display(URL(fileURLWithPath: loadingPath).standardizedFileURL)
-        showStatus("Loading \(loadingPath)…")
-        statusSummaryLabel.stringValue = ""
-    }
-
-    public func selectSidebarLocation(_ url: URL) {
-        sidebarController.select(url)
+    public func selectSidebarLocation(_ location: BrowserLocation) {
+        sidebarController.select(location)
     }
 
     /// Displays a brief accessibility-friendly status message in the footer.
@@ -311,35 +272,9 @@ public final class ExplorerBrowserViewController: NSViewController {
         container.blendingMode = .withinWindow
         container.state = .active
 
-        sidebarController.onSelection = { [weak self] location in
-            self?.onSidebarLocationSelection?(location)
-        }
-        sidebarController.onExpansionRequest = { [weak self] url in
-            self?.onSidebarExpansionRequest?(url)
-        }
-        sidebarController.onOpenInNewTab = { [weak self] url in
-            self?.onOpenSidebarLocationInNewTab?(url)
-        }
-        sidebarController.onCreateFolder = { [weak self] url in
-            self?.onCreateFolderInSidebarLocation?(url)
-        }
-        sidebarController.onMoveToTrash = { [weak self] url in
-            self?.onMoveSidebarLocationToTrash?(url)
-        }
-        sidebarController.onRemoveFavorite = { [weak self] url in
-            self?.onRemoveSidebarFavorite?(url)
-        }
-        sidebarController.onAddFavorite = { [weak self] url in
-            self?.onAddSidebarFavorite?(url)
-        }
-        sidebarController.onCopyPath = { [weak self] url in
-            self?.onCopySidebarPath?(url)
-        }
-        sidebarController.onRevealInFinder = { [weak self] url in
-            self?.onRevealSidebarInFinder?(url)
-        }
-        sidebarController.canAddFavorite = { [weak self] url in
-            self?.canAddSidebarFavorite?(url) ?? false
+        sidebarController.viewState = viewState
+        sidebarController.onAction = { [weak self] action in
+            _ = self?.emit(action)
         }
 
         let scrollView = NSScrollView()
@@ -361,8 +296,12 @@ public final class ExplorerBrowserViewController: NSViewController {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
 
-        breadcrumbBar.onNavigate = { [weak self] url in self?.onBreadcrumbSelection?(url) }
-        breadcrumbBar.onSubmitPath = { [weak self] path in self?.onPathSubmission?(path) }
+        breadcrumbBar.onNavigate = { [weak self] location in
+            _ = self?.emit(.openLocation(location))
+        }
+        breadcrumbBar.onSubmitPath = { [weak self] path in
+            _ = self?.emit(.submitPath(path))
+        }
         configureSearchField()
         configureViewModeControl()
         configureStatusLabels()
@@ -525,11 +464,11 @@ public final class ExplorerBrowserViewController: NSViewController {
     @objc private func performNavigation(_ sender: NSButton) {
         let commands: [BrowserNavigationCommand] = [.back, .forward, .up]
         guard commands.indices.contains(sender.tag) else { return }
-        onNavigationCommand?(commands[sender.tag])
+        _ = emit(.navigation(commands[sender.tag]))
     }
 
     @objc private func changeViewMode(_ sender: NSSegmentedControl) {
-        onViewModeSelection?(sender.selectedSegment == 1 ? .icons : .details)
+        _ = emit(.setViewMode(sender.selectedSegment == 1 ? .icons : .details))
     }
 
     @objc private func submitSearch(_ sender: Any?) {
@@ -539,9 +478,9 @@ public final class ExplorerBrowserViewController: NSViewController {
     private func notifySearchChange() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if query.isEmpty {
-            onSearchClear?()
+            _ = emit(.clearSearch)
         } else {
-            onSearchQueryChange?(query)
+            _ = emit(.search(query))
         }
     }
 }
@@ -561,7 +500,7 @@ extension ExplorerBrowserViewController: NSSplitViewDelegate {
         guard width >= SidebarLayout.minimumWidth,
               width <= SidebarLayout.maximumWidth else { return }
         requestedSidebarWidth = width
-        onSidebarWidthChange?(width)
+        _ = emit(.sidebarWidthChange(width))
     }
 
     public func splitView(
@@ -593,6 +532,24 @@ extension ExplorerBrowserViewController: NSSplitViewDelegate {
         guard splitView === self.splitView,
               let sidebar = splitView.subviews.first else { return true }
         return view !== sidebar
+    }
+
+    private func applyViewState() {
+        sidebarController.viewState = viewState
+        fileContentController.viewState = viewState
+    }
+
+    @discardableResult
+    private func emit(_ action: BrowserAction) -> Bool {
+        if let onAction {
+            return onAction(action)
+        }
+        switch action {
+        case .dropFiles, .dropPromisedFiles:
+            return false
+        default:
+            return true
+        }
     }
 }
 

@@ -21,15 +21,15 @@ final class ExplorerTabOperationCoordinator {
         case let .progress(progress) where pendingIDs.contains(progress.id):
             let detail = progress.progress.currentItem?.lastPathComponent ?? "item"
             onStatus?(
-                "\(progress.progress.kind.rawValue): "
+                "\(progress.progress.kind.progressiveName) "
                     + "\(progress.progress.completedItems) of \(progress.progress.totalItems) — \(detail)"
             )
         case let .stateChanged(snapshot) where pendingIDs.contains(snapshot.id):
             switch snapshot.state {
             case .queued:
-                onStatus?("\(snapshot.operation.kind.rawValue) queued.")
+                onStatus?("\(snapshot.operation.kind.displayName) queued.")
             case .running:
-                onStatus?("\(snapshot.operation.kind.rawValue) in progress…")
+                onStatus?("\(snapshot.operation.kind.progressiveName)…")
             case .completed, .failed, .cancelled:
                 // `submit` awaits the result because the first stream event can
                 // arrive before the tab has registered the operation ID.
@@ -55,7 +55,7 @@ final class ExplorerTabOperationCoordinator {
             let id = await queue.submit(operation, conflictResolver: resolver)
             guard let self else { return }
             self.pendingIDs.insert(id)
-            self.onStatus?("\(operation.kind.rawValue) queued.")
+            self.onStatus?("\(operation.kind.displayName) queued.")
             do {
                 let result = try await queue.result(for: id)
                 guard self.pendingIDs.remove(id) != nil else { return }
@@ -74,10 +74,16 @@ final class ExplorerTabOperationCoordinator {
         for kind: FileOperationKind,
         result: FileOperationResult
     ) -> String {
+        if result.didCompletePartially {
+            return "\(kind.completionName) \(result.completedItems) of \(result.items.count) items."
+        }
+        if result.failedItems > 0 {
+            return "\(kind.displayName) failed."
+        }
         if result.skippedItems > 0 {
-            return "\(kind.rawValue) completed "
+            return "\(kind.completionName) "
                 + "(\(result.completedItems) completed, \(result.skippedItems) skipped)."
         }
-        return "\(kind.rawValue) completed."
+        return "\(kind.completionName)."
     }
 }

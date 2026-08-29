@@ -18,7 +18,7 @@ actor FileConflictCoordinator: FileConflictResolving {
             sourceName: conflict.source.lastPathComponent,
             destinationName: conflict.destination.lastPathComponent,
             destinationFolder: displayFolderName(for: conflict.destination.deletingLastPathComponent()),
-            operationTitle: operationTitle(for: conflict.kind),
+            operationTitle: conflict.kind.displayName,
             remainingItemCount: conflict.remainingItemCount
         )
         let decision = await presenter.present(prompt)
@@ -32,18 +32,6 @@ actor FileConflictCoordinator: FileConflictResolving {
     private func displayFolderName(for url: URL) -> String {
         let name = url.lastPathComponent
         return name.isEmpty ? url.path : name
-    }
-
-    private func operationTitle(for kind: FileOperationKind) -> String {
-        switch kind {
-        case .createFolder: "New Folder"
-        case .rename: "Rename"
-        case .copy: "Copy"
-        case .move: "Move"
-        case .duplicate: "Duplicate"
-        case .trash: "Move to Trash"
-        case .delete: "Delete"
-        }
     }
 }
 

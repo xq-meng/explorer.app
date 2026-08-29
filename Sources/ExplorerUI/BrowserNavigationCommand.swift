@@ -5,7 +5,7 @@ import Foundation
 /// The UI intentionally models these commands without assuming a particular
 /// file provider. A later coordinator can connect them to navigation history
 /// and directory loading services.
-public enum BrowserNavigationCommand: Sendable {
+public enum BrowserNavigationCommand: Sendable, Equatable {
     case back
     case forward
     case up

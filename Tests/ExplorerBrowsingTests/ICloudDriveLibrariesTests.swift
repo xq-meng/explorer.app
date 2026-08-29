@@ -75,6 +75,43 @@ final class ICloudDriveLibrariesTests: XCTestCase {
             "Pages"
         )
     }
+
+    func testLibraryDocumentsUseICloudDriveAsLogicalParent() {
+        let stashDocuments = URL(
+            fileURLWithPath: "/Users/demo/Library/Mobile Documents/iCloud~ws~stash~icloud/Documents",
+            isDirectory: true
+        )
+        XCTAssertTrue(ICloudDriveLibraries.isLibraryDocumentsDirectory(stashDocuments))
+        XCTAssertEqual(
+            ICloudDriveLibraries.cloudDocsDirectory(containing: stashDocuments)?.lastPathComponent,
+            "com~apple~CloudDocs"
+        )
+        XCTAssertEqual(
+            ICloudDriveLibraries.breadcrumbTrail(for: stashDocuments)?.map(\.title),
+            ["iCloud Drive", "stash"]
+        )
+        let nested = stashDocuments.appendingPathComponent("Inbox", isDirectory: true)
+        XCTAssertEqual(
+            ICloudDriveLibraries.breadcrumbTrail(for: nested)?.map(\.title),
+            ["iCloud Drive", "stash", "Inbox"]
+        )
+    }
+
+    func testCloudDocsBreadcrumbsHideMobileDocuments() {
+        let cloudDocs = URL(
+            fileURLWithPath: "/Users/demo/Library/Mobile Documents/com~apple~CloudDocs",
+            isDirectory: true
+        )
+        XCTAssertEqual(
+            ICloudDriveLibraries.breadcrumbTrail(for: cloudDocs)?.map(\.title),
+            ["iCloud Drive"]
+        )
+        let downloads = cloudDocs.appendingPathComponent("Downloads", isDirectory: true)
+        XCTAssertEqual(
+            ICloudDriveLibraries.breadcrumbTrail(for: downloads)?.map(\.title),
+            ["iCloud Drive", "Downloads"]
+        )
+    }
 }
 
 final class FileSystemMetadataCloudTests: XCTestCase {

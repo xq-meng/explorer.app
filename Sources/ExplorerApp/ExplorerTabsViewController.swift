@@ -6,7 +6,6 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
     var onSelectionChange: (() -> Void)?
     var onNewTab: (() -> Void)?
     var onCloseTab: (() -> Void)?
-    var onTabsReordered: (() -> Void)?
     var onCancelOperation: (() -> Void)?
 
     private let tabView = NSTabView()
@@ -109,7 +108,6 @@ final class ExplorerTabsViewController: NSViewController, NSTabViewDelegate {
         tabView.insertTabViewItem(item, at: destination)
         if wasSelected { tabView.selectTabViewItem(item) }
         refreshTabs()
-        onTabsReordered?()
     }
 
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {

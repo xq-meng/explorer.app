@@ -61,11 +61,33 @@ public struct BrowserSortDescriptor: Sendable, Codable, Equatable {
     public static let nameAscending = BrowserSortDescriptor()
 }
 
+public struct BrowserPathComponent: Sendable, Equatable {
+    public let title: String
+    public let location: BrowserLocation
+
+    public init(title: String, location: BrowserLocation) {
+        self.title = title
+        self.location = location
+    }
+}
+
 public struct BrowserSidebarLocation: Sendable, Equatable {
     public let title: String
-    public let url: URL
+    public let location: BrowserLocation
     public let kind: BrowserSidebarLocationKind
     public let isRemovable: Bool
+
+    public init(
+        title: String,
+        location: BrowserLocation,
+        kind: BrowserSidebarLocationKind,
+        isRemovable: Bool = false
+    ) {
+        self.title = title
+        self.location = location
+        self.kind = kind
+        self.isRemovable = isRemovable
+    }
 
     public init(
         title: String,
@@ -74,10 +96,12 @@ public struct BrowserSidebarLocation: Sendable, Equatable {
         isRemovable: Bool = false
     ) {
         self.title = title
-        self.url = url.standardizedFileURL
+        self.location = .directory(url.standardizedFileURL)
         self.kind = kind
         self.isRemovable = isRemovable
     }
+
+    public var directoryURL: URL? { location.directoryURL }
 }
 
 public struct BrowserHomePageItem: Sendable, Equatable {
@@ -161,21 +185,7 @@ public enum BrowserVolumeCapacity {
     }
 }
 
-struct FileRow {
-    let browserRow: BrowserFileRow
-    let name: String
-    let modifiedDate: String
-    let size: String
-    let kind: String
-
-    init(_ row: BrowserFileRow) {
-        browserRow = row
-        name = row.name
-        modifiedDate = row.modifiedDate
-        size = row.size
-        kind = row.kind
-    }
-
+extension BrowserFileRow {
     func value(for identifier: String) -> String {
         switch identifier {
         case "name": name

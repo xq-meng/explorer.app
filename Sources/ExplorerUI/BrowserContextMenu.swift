@@ -12,39 +12,6 @@ public struct BrowserOpenWithApplication: Sendable, Equatable {
     }
 }
 
-public struct BrowserContextMenuState: Sendable, Equatable {
-    public var hasSelection: Bool
-    public var hasNavigableSelection: Bool
-    public var isSingleSelection: Bool
-    public var canPaste: Bool
-    public var canAddToFavorites: Bool
-    public var openWithApplications: [BrowserOpenWithApplication]
-
-    public init(
-        hasSelection: Bool,
-        hasNavigableSelection: Bool,
-        isSingleSelection: Bool,
-        canPaste: Bool,
-        canAddToFavorites: Bool,
-        openWithApplications: [BrowserOpenWithApplication] = []
-    ) {
-        self.hasSelection = hasSelection
-        self.hasNavigableSelection = hasNavigableSelection
-        self.isSingleSelection = isSingleSelection
-        self.canPaste = canPaste
-        self.canAddToFavorites = canAddToFavorites
-        self.openWithApplications = openWithApplications
-    }
-
-    public static let empty = BrowserContextMenuState(
-        hasSelection: false,
-        hasNavigableSelection: false,
-        isSingleSelection: false,
-        canPaste: false,
-        canAddToFavorites: false
-    )
-}
-
 public enum BrowserContextMenuItem: Sendable, Equatable {
     case command(BrowserFileCommand)
     case openWithMenu([BrowserOpenWithApplication])
@@ -53,7 +20,7 @@ public enum BrowserContextMenuItem: Sendable, Equatable {
 }
 
 public enum BrowserContextMenuBuilder {
-    public static func items(for state: BrowserContextMenuState) -> [BrowserContextMenuItem] {
+    public static func items(for state: BrowserViewState) -> [BrowserContextMenuItem] {
         collapsingSeparators(state.hasSelection ? selectionItems(state) : backgroundItems(state))
     }
 
@@ -90,7 +57,7 @@ public enum BrowserContextMenuBuilder {
         application.isDefault ? "\(application.name) (Default)" : application.name
     }
 
-    private static func selectionItems(_ state: BrowserContextMenuState) -> [BrowserContextMenuItem] {
+    private static func selectionItems(_ state: BrowserViewState) -> [BrowserContextMenuItem] {
         var items: [BrowserContextMenuItem] = [.command(.open)]
         if !state.openWithApplications.isEmpty {
             items.append(.openWithMenu(state.openWithApplications))
@@ -115,7 +82,7 @@ public enum BrowserContextMenuBuilder {
         return items
     }
 
-    private static func backgroundItems(_ state: BrowserContextMenuState) -> [BrowserContextMenuItem] {
+    private static func backgroundItems(_ state: BrowserViewState) -> [BrowserContextMenuItem] {
         var items: [BrowserContextMenuItem] = [.command(.newFolder)]
         if state.canPaste {
             items.append(.command(.paste))

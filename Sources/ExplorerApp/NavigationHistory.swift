@@ -7,14 +7,14 @@ enum NavigationOrigin {
     case refresh
 }
 
-struct NavigationHistory {
-    private(set) var back: [URL] = []
-    private(set) var forward: [URL] = []
+struct NavigationHistory<Location: Equatable> {
+    private(set) var back: [Location] = []
+    private(set) var forward: [Location] = []
 
-    var previous: URL? { back.last }
-    var next: URL? { forward.last }
+    var previous: Location? { back.last }
+    var next: Location? { forward.last }
 
-    mutating func commit(origin: NavigationOrigin, current: URL?, destination: URL) -> Bool {
+    mutating func commit(origin: NavigationOrigin, current: Location?, destination: Location) -> Bool {
         switch origin {
         case .newLocation:
             if let current, current != destination {

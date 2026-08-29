@@ -63,7 +63,7 @@ public enum FileOperationUndoPlanner {
 
         guard !undoOperations.isEmpty else { return nil }
         return FileOperationUndoPlan(
-            actionName: actionName(for: operation.kind),
+            actionName: operation.kind.displayName,
             undoOperations: undoOperations,
             redoOperations: [operation]
         )
@@ -77,18 +77,6 @@ public enum FileOperationUndoPlanner {
         case .duplicate(let request): request.conflictPolicy == .replace
         case .trash: false
         case .delete: true
-        }
-    }
-
-    private static func actionName(for kind: FileOperationKind) -> String {
-        switch kind {
-        case .createFolder: "New Folder"
-        case .rename: "Rename"
-        case .copy: "Copy"
-        case .move: "Move"
-        case .duplicate: "Duplicate"
-        case .trash: "Move to Trash"
-        case .delete: "Delete"
         }
     }
 }

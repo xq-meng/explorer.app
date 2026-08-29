@@ -132,6 +132,34 @@ final class FileOperationEngineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
     }
 
+    func testPermanentDeletePrechecksSourcesBeforeRemovingAnything() async throws {
+        let keep = root.appendingPathComponent("keep.txt")
+        let missing = root.appendingPathComponent("missing.txt")
+        try Data("keep".utf8).write(to: keep)
+        do {
+            _ = try await engine.execute(.delete(sources: [keep, missing]))
+            XCTFail("Expected a missing-source error")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .sourceMissing(missing))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keep.path))
+    }
+
+    func testPermanentDeleteReportsPartialSuccessWhenALaterItemFails() async throws {
+        let first = root.appendingPathComponent("first.txt")
+        let second = root.appendingPathComponent("second.txt")
+        try Data("one".utf8).write(to: first)
+        try Data("two".utf8).write(to: second)
+        let spy = FailingSecondDeleteFileManager(failing: second)
+        let engine = FileOperationEngine(fileManager: spy)
+        let result = try await engine.execute(.delete(sources: [first, second]))
+        XCTAssertTrue(result.didCompletePartially)
+        XCTAssertEqual(result.completedItems, 1)
+        XCTAssertEqual(result.failedItems, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+    }
+
     func testQueueContinuesAfterFailureAndKeepsStableIDs() async throws {
         let queue = FileOperationQueue()
         let missing = root.appendingPathComponent("missing")
@@ -315,6 +343,39 @@ private final class TrashRecordingFileManager: FileManagerClient, @unchecked Sen
         trashed.append(url)
         resultingItemURL?.pointee = resultingURL as NSURL
     }
+}
+
+private final class FailingSecondDeleteFileManager: FileManagerClient, @unchecked Sendable {
+    private let backing = LocalFileManagerClient()
+    private let failing: URL
+
+    init(failing: URL) {
+        self.failing = failing.standardizedFileURL
+    }
+
+    func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
+        backing.fileExists(atPath: path, isDirectory: isDirectory)
+    }
+    func createDirectory(at url: URL, withIntermediateDirectories createIntermediates: Bool,
+                         attributes: [FileAttributeKey: Any]?) throws {
+        try backing.createDirectory(at: url, withIntermediateDirectories: createIntermediates, attributes: attributes)
+    }
+    func copyItem(at srcURL: URL, to dstURL: URL) throws { try backing.copyItem(at: srcURL, to: dstURL) }
+    func moveItem(at srcURL: URL, to dstURL: URL) throws { try backing.moveItem(at: srcURL, to: dstURL) }
+    func removeItem(at URL: URL) throws {
+        if URL.standardizedFileURL == failing {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileWriteNoPermissionError,
+                userInfo: [NSLocalizedDescriptionKey: "injected delete failure"]
+            )
+        }
+        try backing.removeItem(at: URL)
+    }
+    func trashItem(at url: URL, resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws {
+        try backing.trashItem(at: url, resultingItemURL: resultingItemURL)
+    }
+    func volumeIdentifier(for url: URL) throws -> String? { try backing.volumeIdentifier(for: url) }
 }
 
 private final class FailingCopyFileManager: FileManagerClient, @unchecked Sendable {

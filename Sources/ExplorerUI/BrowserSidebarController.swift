@@ -5,16 +5,8 @@ import AppKit
 @MainActor
 final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let outlineView = NSOutlineView()
-    var onSelection: ((BrowserSidebarLocation) -> Void)?
-    var onExpansionRequest: ((URL) -> Void)?
-    var onOpenInNewTab: ((URL) -> Void)?
-    var onCreateFolder: ((URL) -> Void)?
-    var onMoveToTrash: ((URL) -> Void)?
-    var onRemoveFavorite: ((URL) -> Void)?
-    var onAddFavorite: ((URL) -> Void)?
-    var onCopyPath: ((URL) -> Void)?
-    var onRevealInFinder: ((URL) -> Void)?
-    var canAddFavorite: ((URL) -> Bool)?
+    var onAction: ((BrowserAction) -> Void)?
+    var viewState = BrowserViewState.empty
 
     private var groups: [SidebarGroup] = []
     private var requestedURLs = Set<URL>()
@@ -94,10 +86,10 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     }
 
     func displayRoots(_ locations: [BrowserSidebarLocation]) {
-        let selectedURL = (outlineView.item(atRow: outlineView.selectedRow) as? SidebarNode)?.location.url
+        let selectedLocation = (outlineView.item(atRow: outlineView.selectedRow) as? SidebarNode)?.location.location
         let existingNodes = Dictionary(uniqueKeysWithValues: groups
             .flatMap(\.children)
-            .map { ($0.location.url, $0) })
+            .map { ($0.location.location, $0) })
         let existingGroups = Dictionary(uniqueKeysWithValues: groups.map { ($0.section, $0) })
 
         groups = SidebarSection.allCases.compactMap { section in
@@ -105,7 +97,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
             guard !sectionLocations.isEmpty else { return nil }
             let group = existingGroups[section] ?? SidebarGroup(section: section)
             group.children = sectionLocations.map { location in
-                if let node = existingNodes[location.url] {
+                if let node = existingNodes[location.location] {
                     node.location = location
                     node.parent = nil
                     return node
@@ -116,14 +108,13 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         }
         outlineView.reloadData()
         groups.forEach { outlineView.expandItem($0) }
-        if let selectedURL {
-            select(selectedURL)
+        if let selectedLocation {
+            select(selectedLocation)
         }
     }
 
-    func select(_ url: URL) {
-        let target = BrowserComputerLocation.matches(url) ? BrowserComputerLocation.url : url.standardizedFileURL
-        guard let node = findNode(target) else { return }
+    func select(_ location: BrowserLocation) {
+        guard let node = findNode(location) else { return }
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return }
         let action = outlineView.action
@@ -134,10 +125,10 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     }
 
     func displayChildren(_ locations: [BrowserSidebarLocation], for parentURL: URL) {
-        guard let parent = findNode(parentURL.standardizedFileURL) else { return }
-        let existing = Dictionary(uniqueKeysWithValues: (parent.children ?? []).map { ($0.location.url, $0) })
+        guard let parent = findNode(.directory(parentURL.standardizedFileURL)) else { return }
+        let existing = Dictionary(uniqueKeysWithValues: (parent.children ?? []).map { ($0.location.location, $0) })
         parent.children = locations.map { location in
-            if let node = existing[location.url] {
+            if let node = existing[location.location] {
                 node.location = location
                 return node
             }
@@ -148,10 +139,10 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         if !(parent.children?.isEmpty ?? true) { outlineView.expandItem(parent) }
     }
 
-    private func findNode(_ url: URL) -> SidebarNode? {
+    private func findNode(_ location: BrowserLocation) -> SidebarNode? {
         func visit(_ nodes: [SidebarNode]) -> SidebarNode? {
             for node in nodes {
-                if node.location.url == url { return node }
+                if node.location.location == location { return node }
                 if let children = node.children, let match = visit(children) { return match }
             }
             return nil
@@ -162,42 +153,48 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     @objc private func selectLocation(_ sender: Any?) {
         let row = outlineView.selectedRow
         guard row >= 0, let node = outlineView.item(atRow: row) as? SidebarNode else { return }
-        onSelection?(node.location)
+        emit(.openLocation(node.location.location))
     }
 
     @objc private func openInNewTab(_ sender: Any?) {
         guard let node = contextMenuNode else { return }
-        onOpenInNewTab?(node.location.url)
+        emit(.openLocationInNewTab(node.location.location))
     }
 
     @objc private func removeFavorite(_ sender: Any?) {
-        guard let node = contextMenuNode, node.location.isRemovable else { return }
-        onRemoveFavorite?(node.location.url)
+        guard let node = contextMenuNode, node.location.isRemovable,
+              let url = node.location.directoryURL else { return }
+        emit(.removeFavorite(url))
     }
 
     @objc private func createFolder(_ sender: Any?) {
-        guard let node = contextMenuNode else { return }
-        onCreateFolder?(node.location.url)
+        guard let url = contextMenuNode?.location.directoryURL else { return }
+        emit(.createFolder(in: url))
     }
 
     @objc private func moveToTrash(_ sender: Any?) {
-        guard let node = contextMenuNode, node.location.kind == .folder else { return }
-        onMoveToTrash?(node.location.url)
+        guard let node = contextMenuNode, node.location.kind == .folder,
+              let url = node.location.directoryURL else { return }
+        emit(.trash(url))
     }
 
     @objc private func revealInFinder(_ sender: Any?) {
-        guard let node = contextMenuNode else { return }
-        onRevealInFinder?(node.location.url)
+        guard let url = contextMenuNode?.location.directoryURL else { return }
+        emit(.revealInFinder(url))
     }
 
     @objc private func copyPath(_ sender: Any?) {
-        guard let node = contextMenuNode else { return }
-        onCopyPath?(node.location.url)
+        guard let url = contextMenuNode?.location.directoryURL else { return }
+        emit(.copyPath(url))
     }
 
     @objc private func addFavorite(_ sender: Any?) {
-        guard let node = contextMenuNode else { return }
-        onAddFavorite?(node.location.url)
+        guard let url = contextMenuNode?.location.directoryURL else { return }
+        emit(.addFavorite(url))
+    }
+
+    private func emit(_ action: BrowserAction) {
+        onAction?(action)
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -208,7 +205,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         let node = contextMenuNode
         let canRemove = node?.location.isRemovable == true
         let canTrash = node?.location.kind == .folder
-        let canAdd = node.map { canAddFavorite?($0.location.url) ?? false } ?? false
+        let canAdd = node?.location.directoryURL.map { viewState.canAddFavorite(at: $0) } ?? false
         let isComputer = node?.location.kind == .computer
         let hasNode = node != nil
         let hasFileLocation = hasNode && !isComputer
@@ -262,8 +259,9 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
         if item is SidebarGroup { return true }
         guard let node = item as? SidebarNode else { return false }
-        if node.children == nil, requestedURLs.insert(node.location.url).inserted {
-            onExpansionRequest?(node.location.url)
+        if node.children == nil, let url = node.location.directoryURL,
+           requestedURLs.insert(url).inserted {
+            emit(.expandSidebar(url))
         }
         return true
     }
@@ -281,9 +279,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         let cell = (outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView)
             ?? makeCell(identifier: identifier)
         cell.textField?.stringValue = node.location.title
-        cell.textField?.toolTip = node.location.kind == .computer
-            ? node.location.title
-            : node.location.url.path
+        cell.textField?.toolTip = node.location.directoryURL?.path ?? node.location.title
         let icon = sidebarIcon(for: node.location)
         cell.imageView?.image = icon.image
         cell.imageView?.contentTintColor = icon.isTemplate ? .secondaryLabelColor : nil
@@ -316,8 +312,8 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
                 true
             )
         case .favorite:
-            if !location.isRemovable {
-                let image = NSWorkspace.shared.icon(forFile: location.url.path)
+            if !location.isRemovable, let url = location.directoryURL {
+                let image = NSWorkspace.shared.icon(forFile: url.path)
                 image.size = NSSize(width: 16, height: 16)
                 image.isTemplate = false
                 return (image, false)
@@ -327,7 +323,9 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
                 true
             )
         case .network:
-            let symbol = location.url.path.contains("com~apple~CloudDocs") ? "icloud.fill" : "network"
+            let symbol = location.directoryURL?.path.contains("com~apple~CloudDocs") == true
+                ? "icloud.fill"
+                : "network"
             return (
                 NSImage(systemSymbolName: symbol, accessibilityDescription: location.title),
                 true

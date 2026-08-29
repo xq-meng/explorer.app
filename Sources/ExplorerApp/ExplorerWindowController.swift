@@ -16,13 +16,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private let mountedVolumeService = MountedVolumeService()
     private var sessions: [ExplorerTabController] = []
     private var mountedVolumes: [MountedVolumeMetadata] = []
+    private lazy var navigationLocations = buildNavigationLocations()
     private var operationEventTask: Task<Void, Never>?
     private var volumeLoadTask: Task<Void, Never>?
     private var didStartVolumeLoading = false
     private var operationHistory = FileOperationHistory()
     private var historyTask: Task<Void, Never>?
-    private var didRestoreSession = false
-    private var isRestoringSession = false
+    private var didOpenInitialTab = false
     private var operationSnapshots: [UUID: FileOperationQueueSnapshot] = [:]
     private var operationProgress: [UUID: FileOperationProgress] = [:]
     private var operationOrder: [UUID] = []
@@ -51,11 +51,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         tabViewController.onSelectionChange = { [weak self] in
             self?.sessions.forEach { $0.closeQuickLook() }
             self?.updateWindowTitle()
-            self?.persistSessionState()
         }
         tabViewController.onNewTab = { [weak self] in self?.newTab() }
         tabViewController.onCloseTab = { [weak self] in self?.closeCurrentTab() }
-        tabViewController.onTabsReordered = { [weak self] in self?.persistSessionState() }
         tabViewController.onCancelOperation = { [weak self] in self?.cancelCurrentOperation() }
         observeOperationEvents()
     }
@@ -64,61 +62,69 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
-        restoreSessionIfNeeded()
+        openInitialTabIfNeeded()
         startVolumeLoading()
     }
 
     func perform(_ command: BrowserNavigationCommand) { currentSession?.perform(command) }
 
-    func newTab(at url: URL? = nil, restoring state: ExplorerSettingsStore.TabState? = nil) {
-        let startingURL = state?.url ?? url ?? currentSession?.currentDirectoryURL ?? BrowserComputerLocation.url
-        let initialViewMode = state?.viewMode ?? currentSession?.viewMode ?? restoredViewMode
-        let initialSortDescriptor = state?.sortDescriptor ?? currentSession?.sortDescriptor ?? .nameAscending
+    func newTab(at location: BrowserLocation? = nil) {
+        let startingLocation = location ?? currentSession?.currentLocation ?? .computer
+        let initialViewMode = currentSession?.viewMode ?? restoredViewMode
+        let initialSortDescriptor = currentSession?.sortDescriptor ?? .nameAscending
         let session = ExplorerTabController(
             homeURL: homeURL,
-            sidebarLocations: allSidebarLocations,
+            sidebarLocations: navigationLocations.sidebar,
             initialViewMode: initialViewMode,
             initialSortDescriptor: initialSortDescriptor,
             initialShowsPreview: restoredPreviewVisibility,
             initialShowsHiddenFiles: settings.showsHiddenFiles,
             sidebarWidth: settings.sidebarWidth,
-            homePageModel: makeHomePageModel(),
+            homePageModel: navigationLocations.homePage,
             operationQueue: operationQueue,
             clipboard: clipboard
         )
         let item = NSTabViewItem(viewController: session)
         item.label = "Loading…"
-        session.onTitleChange = { [weak self, weak item, weak session] title in
-            item?.label = title
-            self?.tabViewController.refreshTabs()
-            guard self?.currentSession === session else { return }
-            self?.window?.title = "Explorer — \(title)"
-            self?.persistSessionState()
+        session.onEvent = { [weak self, weak item, weak session] event in
+            guard let self, let session else { return }
+            self.handle(event, from: session, item: item)
         }
-        session.onViewModeChange = { [weak self] mode in
-            self?.settings.viewMode = mode
-            self?.persistSessionState()
-        }
-        session.onSortChange = { [weak self] _ in self?.persistSessionState() }
-        session.onPreviewVisibilityChange = { [weak self] isVisible in
-            self?.settings.showsPreview = isVisible
-        }
-        session.onSidebarWidthChange = { [weak self] width in
-            self?.settings.sidebarWidth = width
-        }
-        session.onOperationCompleted = { [weak self] operation, result in
-            self?.recordUndoPlan(for: operation, result: result)
-        }
-        session.onOpenLocationInNewTab = { [weak self] url in self?.newTab(at: url) }
-        session.onRemoveFavorite = { [weak self] url in self?.removeFavorite(url) }
-        session.onAddFavorite = { [weak self] url in self?.addFavorite(url) }
-        session.canAddFavorite = { [weak self] url in self?.canAddFavorite(url) ?? false }
-        session.onHomePageRefresh = { [weak self] in self?.reloadVolumes() }
+        session.setOccupiedDirectoryURLs(navigationLocations.occupiedDirectoryURLs)
         tabViewController.addTabViewItem(item)
         tabViewController.selectedTabViewItemIndex = tabViewController.tabViewItems.count - 1
         sessions.append(session)
-        session.start(at: startingURL)
-        persistSessionState()
+        session.start(at: startingLocation)
+    }
+
+    private func handle(
+        _ event: ExplorerTabEvent,
+        from session: ExplorerTabController,
+        item: NSTabViewItem?
+    ) {
+        switch event {
+        case let .titleChange(title):
+            item?.label = title
+            tabViewController.refreshTabs()
+            guard currentSession === session else { return }
+            window?.title = "Explorer — \(title)"
+        case let .viewModeChange(mode):
+            settings.viewMode = mode
+        case let .previewVisibilityChange(isVisible):
+            settings.showsPreview = isVisible
+        case let .sidebarWidthChange(width):
+            settings.sidebarWidth = width
+        case let .operationCompleted(operation, result):
+            recordUndoPlan(for: operation, result: result)
+        case let .openLocationInNewTab(location):
+            newTab(at: location)
+        case let .removeFavorite(url):
+            removeFavorite(url)
+        case let .addFavorite(url):
+            addFavorite(url)
+        case .homePageRefresh:
+            reloadVolumes()
+        }
     }
 
     func closeCurrentTab() {
@@ -128,7 +134,6 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         sessions.removeAll { $0 === session }
         tabViewController.removeTabViewItem(item)
         updateWindowTitle()
-        persistSessionState()
     }
 
     func setViewMode(_ mode: BrowserViewMode) { currentSession?.setViewMode(mode) }
@@ -148,7 +153,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     var undoActionName: String? { operationHistory.undoActionName }
     var redoActionName: String? { operationHistory.redoActionName }
     var canAddCurrentFolderToFavorites: Bool {
-        guard let url = currentSession?.currentDirectoryURL else { return false }
+        guard let url = currentSession?.currentLocation?.directoryURL else { return false }
         return canAddFavorite(url)
     }
     func performFileCommand(_ command: BrowserFileCommand) { currentSession?.performFileCommand(command) }
@@ -165,7 +170,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func addCurrentFolderToFavorites() {
-        guard let url = currentSession?.currentDirectoryURL else { return }
+        guard let url = currentSession?.currentLocation?.directoryURL else { return }
         addFavorite(url)
     }
 
@@ -180,7 +185,6 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         operationEventTask?.cancel()
         volumeLoadTask?.cancel()
         historyTask?.cancel()
-        persistSessionState()
         onClose?()
     }
 
@@ -211,87 +215,18 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         tabViewController.setTitlebarAccessoryWidth(max(220, window.frame.width - controlsWidth - 12))
     }
 
-    private var standardSidebarLocations: [BrowserSidebarLocation] {
-        var locations = [
-            BrowserSidebarLocation(
-                title: BrowserComputerLocation.title,
-                url: BrowserComputerLocation.url,
-                kind: .computer
-            ),
-            BrowserSidebarLocation(title: "Home", url: homeURL, kind: .favorite),
-        ]
-        for name in ["Desktop", "Documents", "Downloads"] {
-            let url = homeURL.appendingPathComponent(name, isDirectory: true)
-            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                locations.append(BrowserSidebarLocation(title: name, url: url, kind: .favorite))
-            }
-        }
-        if let applicationsURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first,
-           (try? applicationsURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-            locations.append(BrowserSidebarLocation(title: "Applications", url: applicationsURL, kind: .favorite))
-        }
-        return locations
-    }
-
-    private var customSidebarLocations: [BrowserSidebarLocation] {
-        let standardURLs = Set(standardSidebarLocations.map(\.url))
-        var seen = standardURLs
-        return settings.favoriteURLs.compactMap { url in
-            guard seen.insert(url).inserted else { return nil }
-            let title = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
-            return BrowserSidebarLocation(title: title, url: url, kind: .favorite, isRemovable: true)
-        }
-    }
-
-    private var mountedVolumeLocations: [BrowserSidebarLocation] {
-        mountedVolumes.compactMap { volume in
-            guard volume.url.standardizedFileURL != homeURL else { return nil }
-            return BrowserSidebarLocation(title: volume.displayName, url: volume.url, kind: .volume)
-        }
-    }
-
-    private var allSidebarLocations: [BrowserSidebarLocation] {
-        var locations = standardSidebarLocations + customSidebarLocations
-        var seenURLs = Set(locations.map(\.url))
-        for volume in mountedVolumeLocations where seenURLs.insert(volume.url).inserted {
-            locations.append(volume)
-        }
-        for location in networkSidebarLocations where seenURLs.insert(location.url).inserted {
-            locations.append(location)
-        }
-        return locations
-    }
-
-    private var networkSidebarLocations: [BrowserSidebarLocation] {
-        NetworkSidebarLocator.items(homeURL: homeURL, isDirectory: Self.isDirectory).map { item in
-            BrowserSidebarLocation(title: item.title, url: item.url, kind: .network)
-        }
+    private func buildNavigationLocations() -> ExplorerNavigationLocations {
+        ExplorerNavigationLocationBuilder.build(
+            homeURL: homeURL,
+            favoriteURLs: settings.favoriteURLs,
+            mountedVolumes: mountedVolumes,
+            isDirectory: Self.isDirectory
+        )
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
-    }
-
-    private func makeHomePageModel() -> BrowserHomePageModel {
-        let favorites = (standardSidebarLocations + customSidebarLocations)
-            .filter { $0.kind == .favorite }
-            .map { location in
-                BrowserHomePageItem(title: location.title, url: location.url, subtitle: location.url.path)
-            }
-        let volumes = mountedVolumes.compactMap { volume -> BrowserHomePageVolume? in
-            guard volume.url.standardizedFileURL != homeURL else { return nil }
-            return BrowserHomePageVolume(
-                title: volume.displayName,
-                url: volume.url,
-                availableCapacity: volume.availableCapacity,
-                totalCapacity: volume.totalCapacity
-            )
-        }
-        let network = networkSidebarLocations.map { location in
-            BrowserHomePageItem(title: location.title, url: location.url, subtitle: location.url.path)
-        }
-        return BrowserHomePageModel(favorites: favorites, volumes: volumes, network: network)
     }
 
     private func addFavorite(_ url: URL) {
@@ -304,8 +239,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     private func canAddFavorite(_ url: URL) -> Bool {
         let url = url.standardizedFileURL
-        if BrowserComputerLocation.matches(url) { return false }
-        return !allSidebarLocations.contains(where: { $0.url == url })
+        return !navigationLocations.contains(url)
     }
 
     private func removeFavorite(_ url: URL) {
@@ -315,37 +249,19 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refreshSidebarLocations() {
-        let locations = allSidebarLocations
-        let homePage = makeHomePageModel()
+        navigationLocations = buildNavigationLocations()
         sessions.forEach {
-            $0.updateSidebarLocations(locations)
-            $0.updateHomePage(homePage)
+            $0.updateSidebarLocations(navigationLocations.sidebar)
+            $0.updateHomePage(navigationLocations.homePage)
+            $0.setOccupiedDirectoryURLs(navigationLocations.occupiedDirectoryURLs)
         }
     }
 
-    private func restoreSessionIfNeeded() {
-        guard !didRestoreSession else { return }
-        didRestoreSession = true
-        isRestoringSession = true
-        newTab(at: BrowserComputerLocation.url)
-        isRestoringSession = false
-        persistSessionState()
-    }
-
-    private func persistSessionState() {
-        guard !isRestoringSession else { return }
-        settings.saveTabSession(
-            tabs: tabViewController.tabViewItems.compactMap {
-                guard let session = $0.viewController as? ExplorerTabController,
-                      let url = session.currentDirectoryURL else { return nil }
-                return ExplorerSettingsStore.TabState(
-                    url: url,
-                    viewMode: session.viewMode,
-                    sortDescriptor: session.sortDescriptor
-                )
-            },
-            selectedIndex: tabViewController.selectedTabViewItemIndex
-        )
+    /// A new window always starts at My Computer.
+    private func openInitialTabIfNeeded() {
+        guard !didOpenInitialTab else { return }
+        didOpenInitialTab = true
+        newTab(at: .computer)
     }
 
     private func observeOperationEvents() {
@@ -417,15 +333,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func progressTitle(for kind: FileOperationKind) -> String {
-        switch kind {
-        case .createFolder: "Creating folder"
-        case .rename: "Renaming"
-        case .copy: "Copying"
-        case .move: "Moving"
-        case .duplicate: "Duplicating"
-        case .trash: "Moving to Trash"
-        case .delete: "Deleting"
-        }
+        kind.progressiveName
     }
 
     private func progressDetail(

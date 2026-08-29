@@ -26,6 +26,8 @@ final class ExplorerTabSearchCoordinator {
 
     func search(
         snapshot: DirectorySnapshot,
+        visibleItems: [FileItem],
+        additionalSubtreeRoots: [URL] = [],
         text: String,
         includesHiddenFiles: Bool
     ) {
@@ -37,16 +39,31 @@ final class ExplorerTabSearchCoordinator {
         let root = snapshot.directoryURL
         activeRoot = root
         let service = service
+        let immediateSnapshot = DirectorySnapshot(
+            directoryURL: snapshot.directoryURL,
+            items: visibleItems,
+            issues: snapshot.issues
+        )
+        let subtreeRoots = [root] + additionalSubtreeRoots.map(\.standardizedFileURL)
         task = Task { [weak self] in
             do {
-                let immediate = try await service.filter(snapshot, matching: query)
+                let immediate = try await service.filter(immediateSnapshot, matching: query)
                 guard let self, self.isCurrent(generation, root: root) else { return }
                 self.onResults?(immediate, text, immediate.count >= query.maximumResults)
 
                 guard immediate.count < query.maximumResults else { return }
-                let subtree = try await service.searchSubtree(at: root, matching: query)
+                var merged = immediate
+                for subtreeRoot in subtreeRoots {
+                    guard self.isCurrent(generation, root: root) else { return }
+                    let subtree = try await service.searchSubtree(at: subtreeRoot, matching: query)
+                    merged = Self.merge(merged, with: subtree)
+                    if merged.count >= query.maximumResults {
+                        merged = Array(merged.prefix(query.maximumResults))
+                        break
+                    }
+                }
                 guard self.isCurrent(generation, root: root) else { return }
-                self.onResults?(Self.merge(immediate, with: subtree), text, true)
+                self.onResults?(merged, text, true)
             } catch is CancellationError {
             } catch SearchServiceError.cancelled {
             } catch {

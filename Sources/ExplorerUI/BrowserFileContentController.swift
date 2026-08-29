@@ -7,26 +7,16 @@ import AppKit
 /// by the two content modes: selection, sorting, rename, menus, and drag/drop.
 @MainActor
 final class BrowserFileContentController: NSViewController {
-    var onOpenFileRow: ((BrowserFileRow) -> Void)?
-    var onRenameSubmission: ((URL, String) -> Void)?
-    var onSelectionChange: ((Set<URL>) -> Void)?
+    var onAction: ((BrowserAction) -> Bool)?
     var onSelectionPresentationChange: (([BrowserFileRow]) -> Void)?
-    var onSortSelection: ((BrowserSortDescriptor) -> Void)?
-    var onThumbnailRequest: ((URL) -> Void)?
-    var onThumbnailCancellation: ((URL) -> Void)?
-    var onFileCommand: ((BrowserFileCommand) -> Void)?
-    var onNavigationCommand: ((BrowserNavigationCommand) -> Void)?
-    var contextMenuState: (() -> BrowserContextMenuState)?
-    var onFileURLDrop: ((BrowserFileDrop) -> Bool)?
-    var onPromisedFileDrop: ((BrowserPromisedFileDrop) -> Bool)?
-    var canAcceptFileURLDrop: (() -> Bool)?
+    var viewState = BrowserViewState.empty
 
     private let tableView = BrowserFileTableView()
     private let collectionView = BrowserDropCollectionView()
     private let listScrollView = NSScrollView()
     private let iconScrollView = NSScrollView()
     private let thumbnailCache = NSCache<NSURL, NSImage>()
-    private var fileRows: [FileRow] = []
+    private var fileRows: [BrowserFileRow] = []
     private var viewMode: BrowserViewMode = .details
     private var sortDescriptor: BrowserSortDescriptor = .nameAscending
     private var renamingURL: URL?
@@ -60,7 +50,7 @@ final class BrowserFileContentController: NSViewController {
 
     func display(_ rows: [BrowserFileRow], selecting selectedURLs: Set<URL>) {
         loadViewIfNeeded()
-        fileRows = rows.map(FileRow.init)
+        fileRows = rows
         tableView.reloadData()
         collectionView.reloadData()
         selectRows(with: selectedURLs)
@@ -82,7 +72,7 @@ final class BrowserFileContentController: NSViewController {
                   let item = collectionView.item(at: indexPath) as? BrowserIconCollectionItem else {
                 continue
             }
-            let row = fileRows[indexPath.item].browserRow
+            let row = fileRows[indexPath.item]
             item.display(
                 row,
                 thumbnail: thumbnailCache.object(forKey: row.url as NSURL),
@@ -95,7 +85,7 @@ final class BrowserFileContentController: NSViewController {
         loadViewIfNeeded()
         let target = url.standardizedFileURL
         guard viewMode == .details,
-              let row = fileRows.firstIndex(where: { $0.browserRow.url == target }),
+              let row = fileRows.firstIndex(where: { $0.url == target }),
               let column = tableView.tableColumns.firstIndex(where: {
                   $0.identifier.rawValue == "name"
               }) else { return }
@@ -156,11 +146,11 @@ final class BrowserFileContentController: NSViewController {
     func displayThumbnail(_ data: Data, for url: URL) {
         let target = url.standardizedFileURL
         guard let image = NSImage(data: data),
-              let index = fileRows.firstIndex(where: { $0.browserRow.url == target }) else { return }
+              let index = fileRows.firstIndex(where: { $0.url == target }) else { return }
         thumbnailCache.setObject(image, forKey: target as NSURL)
         let indexPath = IndexPath(item: index, section: 0)
         guard let item = collectionView.item(at: indexPath) as? BrowserIconCollectionItem else { return }
-        let row = fileRows[index].browserRow
+        let row = fileRows[index]
         item.display(row, thumbnail: image, isCut: cutURLs.contains(row.url))
     }
 
@@ -188,7 +178,7 @@ final class BrowserFileContentController: NSViewController {
         tableView.doubleAction = #selector(openSelectedFileRow(_:))
         tableView.setAccessibilityLabel("Folder contents")
         tableView.menu = makeFileContextMenu()
-        tableView.onFileKeyCommand = { [weak self] command in self?.onFileCommand?(command) }
+        tableView.onFileKeyCommand = { [weak self] command in _ = self?.emit(.file(command)) }
         tableView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
@@ -211,7 +201,7 @@ final class BrowserFileContentController: NSViewController {
         collectionView.allowsMultipleSelection = true
         collectionView.setAccessibilityLabel("Folder contents as icons")
         collectionView.menu = makeFileContextMenu()
-        collectionView.onFileKeyCommand = { [weak self] command in self?.onFileCommand?(command) }
+        collectionView.onFileKeyCommand = { [weak self] command in _ = self?.emit(.file(command)) }
         collectionView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
@@ -263,16 +253,16 @@ final class BrowserFileContentController: NSViewController {
     private func requestThumbnailIfNeeded(at indexPath: IndexPath) {
         guard let row = row(at: indexPath), !row.isNavigable,
               thumbnailCache.object(forKey: row.url as NSURL) == nil else { return }
-        onThumbnailRequest?(row.url)
+        _ = emit(.requestThumbnail(row.url))
     }
 
     private func row(at indexPath: IndexPath?) -> BrowserFileRow? {
         guard let index = indexPath?.item, fileRows.indices.contains(index) else { return nil }
-        return fileRows[index].browserRow
+        return fileRows[index]
     }
 
     private func selectRows(with urls: Set<URL>) {
-        let indexes = IndexSet(fileRows.indices.filter { urls.contains(fileRows[$0].browserRow.url) })
+        let indexes = IndexSet(fileRows.indices.filter { urls.contains(fileRows[$0].url) })
         tableView.selectRowIndexes(indexes, byExtendingSelection: false)
         collectionView.selectionIndexes = indexes
     }
@@ -285,7 +275,7 @@ final class BrowserFileContentController: NSViewController {
             tableView.selectRowIndexes(indexes, byExtendingSelection: false)
         }
         reportSelectionPresentation()
-        onSelectionChange?(Set(selectedRows.map(\.url)))
+        _ = emit(.selectionChange(Set(selectedRows.map(\.url))))
     }
 
     private func reportSelectionPresentation() {
@@ -294,7 +284,7 @@ final class BrowserFileContentController: NSViewController {
 
     private var selectedRows: [BrowserFileRow] {
         selectedItemIndexes.compactMap { index in
-            fileRows.indices.contains(index) ? fileRows[index].browserRow : nil
+            fileRows.indices.contains(index) ? fileRows[index] : nil
         }
     }
 
@@ -305,7 +295,7 @@ final class BrowserFileContentController: NSViewController {
     @objc private func openSelectedFileRow(_ sender: Any?) {
         let row = tableView.clickedRow
         guard fileRows.indices.contains(row) else { return }
-        onOpenFileRow?(fileRows[row].browserRow)
+        _ = emit(.openFileRow(fileRows[row]))
     }
 
     private func makeFileContextMenu() -> NSMenu {
@@ -362,14 +352,14 @@ final class BrowserFileContentController: NSViewController {
         guard let action = (sender.representedObject as? FileContextMenuActionBox)?.action else { return }
         switch action {
         case let .file(command):
-            onFileCommand?(command)
+            _ = emit(.file(command))
         case let .navigation(command):
-            onNavigationCommand?(command)
+            _ = emit(.navigation(command))
         }
     }
 
     private func validateDrop(_ info: NSDraggingInfo, target: BrowserFileRow?) -> NSDragOperation {
-        guard canAcceptFileURLDrop?() == true,
+        guard viewState.canAcceptFileURLDrop,
               target?.isNavigable != false,
               BrowserDropPasteboard.canAccept(info.draggingPasteboard) else { return [] }
         return dropIntent(for: info) == .move ? .move : .copy
@@ -380,20 +370,25 @@ final class BrowserFileContentController: NSViewController {
         let intent = dropIntent(for: info)
         let payload = BrowserDropPasteboard.read(info.draggingPasteboard)
         if !payload.fileURLs.isEmpty {
-            return onFileURLDrop?(BrowserFileDrop(
+            return emit(.dropFiles(BrowserFileDrop(
                 urls: payload.fileURLs,
                 destinationURL: destination,
                 intent: intent
-            )) ?? false
+            )))
         }
         if !payload.promisedFileReceivers.isEmpty {
-            return onPromisedFileDrop?(BrowserPromisedFileDrop(
+            return emit(.dropPromisedFiles(BrowserPromisedFileDrop(
                 receivers: payload.promisedFileReceivers,
                 destinationURL: destination,
                 intent: intent
-            )) ?? false
+            )))
         }
         return false
+    }
+
+    @discardableResult
+    private func emit(_ action: BrowserAction) -> Bool {
+        onAction?(action) ?? false
     }
 
     private func dropIntent(for info: NSDraggingInfo) -> BrowserDropIntent {
@@ -407,7 +402,7 @@ final class BrowserFileContentController: NSViewController {
         guard let source = renamingURL else { return }
         renamingURL = nil
         renameWasCancelled = false
-        guard let row = fileRows.firstIndex(where: { $0.browserRow.url == source }),
+        guard let row = fileRows.firstIndex(where: { $0.url == source }),
               let column = tableView.tableColumns.firstIndex(where: {
                   $0.identifier.rawValue == "name"
               }) else { return }
@@ -425,7 +420,7 @@ extension BrowserFileContentController: NSTextFieldDelegate {
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldSubmit = !renameWasCancelled && !name.isEmpty && name != source.lastPathComponent
         finishRenaming()
-        if shouldSubmit { onRenameSubmission?(source, name) }
+        if shouldSubmit { _ = emit(.rename(source: source, name: name)) }
     }
 
     func control(
@@ -467,7 +462,7 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
 
         if let column = tableColumn {
             label.stringValue = fileRows[row].value(for: column.identifier.rawValue)
-            let rowModel = fileRows[row].browserRow
+            let rowModel = fileRows[row]
             let isRenaming = isNameColumn && rowModel.url == renamingURL
             label.delegate = isNameColumn ? self : nil
             label.isEditable = isRenaming
@@ -588,12 +583,12 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
               let descriptor = tableView.sortDescriptors.first,
               let key = descriptor.key,
               let field = BrowserSortField(rawValue: key) else { return }
-        onSortSelection?(BrowserSortDescriptor(field: field, ascending: descriptor.ascending))
+        _ = emit(.setSort(BrowserSortDescriptor(field: field, ascending: descriptor.ascending)))
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard tableView === self.tableView, fileRows.indices.contains(row) else { return nil }
-        return fileRows[row].browserRow.url as NSURL
+        return fileRows[row].url as NSURL
     }
 
     func tableView(
@@ -604,7 +599,7 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
     ) -> NSDragOperation {
         guard tableView === self.tableView else { return [] }
         let target = operation == .on && fileRows.indices.contains(row)
-            ? fileRows[row].browserRow
+            ? fileRows[row]
             : nil
         if target?.isNavigable == true { tableView.setDropRow(row, dropOperation: .on) }
         return validateDrop(info, target: target)
@@ -618,7 +613,7 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
     ) -> Bool {
         guard tableView === self.tableView else { return false }
         let target = operation == .on && fileRows.indices.contains(row)
-            ? fileRows[row].browserRow
+            ? fileRows[row]
             : nil
         return acceptDrop(info, target: target)
     }
@@ -643,7 +638,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
             for: indexPath
         )
         guard let iconItem = item as? BrowserIconCollectionItem else { return item }
-        let row = fileRows[indexPath.item].browserRow
+        let row = fileRows[indexPath.item]
         iconItem.display(
             row,
             thumbnail: thumbnailCache.object(forKey: row.url as NSURL),
@@ -667,7 +662,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
         forRepresentedObjectAt indexPath: IndexPath
     ) {
         guard let url = (item as? BrowserIconCollectionItem)?.representedURL else { return }
-        onThumbnailCancellation?(url)
+        _ = emit(.cancelThumbnail(url))
     }
 
     func collectionView(
@@ -675,7 +670,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
         pasteboardWriterForItemAt indexPath: IndexPath
     ) -> NSPasteboardWriting? {
         guard fileRows.indices.contains(indexPath.item) else { return nil }
-        return fileRows[indexPath.item].browserRow.url as NSURL
+        return fileRows[indexPath.item].url as NSURL
     }
 
     func collectionView(
@@ -687,7 +682,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
         guard NSApp.currentEvent?.clickCount == 2,
               let index = indexPaths.first?.item,
               fileRows.indices.contains(index) else { return }
-        onOpenFileRow?(fileRows[index].browserRow)
+        _ = emit(.openFileRow(fileRows[index]))
     }
 
     func collectionView(
@@ -702,7 +697,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
 extension BrowserFileContentController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         selectContextMenuTarget(for: menu)
-        let state = contextMenuState?() ?? .empty
+        let state = viewState
         menu.removeAllItems()
         for item in BrowserContextMenuBuilder.items(for: state) {
             switch item {

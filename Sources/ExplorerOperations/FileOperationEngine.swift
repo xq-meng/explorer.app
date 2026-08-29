@@ -442,18 +442,43 @@ public actor FileOperationEngine {
 
     private func runDelete(_ request: DeleteRequest, operationID: UUID,
                            progress: (@Sendable (FileOperationProgress) async -> Void)?) async throws -> FileOperationResult {
+        guard !request.sources.isEmpty else {
+            return FileOperationResult(operationID: operationID, kind: .delete, items: [])
+        }
+        for source in request.sources {
+            try checkCancellation()
+            try checkSource(source)
+        }
+
         var results: [FileOperationItemResult] = []
         for (index, source) in request.sources.enumerated() {
             try checkCancellation()
-            try checkSource(source)
-            do { try fileManager.removeItem(at: source) }
-            catch { throw map(error, at: source) }
-            results.append(.init(source: source, destination: nil, status: .completed))
+            do {
+                try checkSource(source)
+                try fileManager.removeItem(at: source)
+                results.append(.init(source: source, destination: nil, status: .completed))
+            } catch {
+                results.append(.init(
+                    source: source,
+                    destination: nil,
+                    status: .failed,
+                    failureReason: map(error, at: source).errorDescription
+                ))
+            }
             await report(progress, id: operationID, kind: .delete, completed: index + 1,
                          total: request.sources.count, item: source)
             await Task.yield()
         }
-        return FileOperationResult(operationID: operationID, kind: .delete, items: results)
+
+        if results.contains(where: { $0.status == .completed }) {
+            return FileOperationResult(operationID: operationID, kind: .delete, items: results)
+        }
+        if let firstFailure = results.first(where: { $0.status == .failed }) {
+            throw FileOperationError.underlying(
+                firstFailure.failureReason ?? FileOperationError.sourceMissing(firstFailure.source).errorDescription ?? "Delete failed."
+            )
+        }
+        throw FileOperationError.sourceMissing(request.sources[0])
     }
 
     private enum ConflictResolution {

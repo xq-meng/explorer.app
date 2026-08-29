@@ -79,7 +79,7 @@ final class LocalFileProviderTests: XCTestCase {
         }
     }
 
-    func testCloudDocsListingIncludesSiblingAppLibraries() async throws {
+    func testCloudDocsListingDoesNotInjectSiblingAppLibraries() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -94,12 +94,13 @@ final class LocalFileProviderTests: XCTestCase {
         try Data("config".utf8).write(to: stashDocuments.appendingPathComponent("Default.yaml"))
 
         let snapshot = try await LocalFileProvider().loadDirectory(at: cloudDocs)
-        XCTAssertEqual(Set(snapshot.items.map(\.name)), ["QQ", "stash"])
-        XCTAssertEqual(
-            snapshot.items.first(where: { $0.name == "stash" })?.url,
-            stashDocuments.standardizedFileURL
-        )
-        XCTAssertEqual(snapshot.items.first(where: { $0.name == "stash" })?.kind, .directory)
+        XCTAssertEqual(snapshot.items.map(\.name), ["QQ"])
+        XCTAssertFalse(snapshot.items.contains(where: { $0.name == "stash" }))
+
+        let overlay = ICloudDriveLibraries.overlayItems(at: cloudDocs, showsHiddenFiles: false)
+        XCTAssertEqual(overlay.map(\.name), ["stash"])
+        XCTAssertEqual(overlay.first?.url, stashDocuments.standardizedFileURL)
+        XCTAssertEqual(overlay.first?.kind, .directory)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

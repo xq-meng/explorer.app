@@ -62,7 +62,7 @@ final class BrowserHomePageController: NSViewController {
             $0.removeFromSuperview()
         }
 
-        let title = NSTextField(labelWithString: BrowserComputerLocation.title)
+        let title = NSTextField(labelWithString: BrowserLocation.computerTitle)
         title.font = .systemFont(ofSize: 22, weight: .semibold)
         title.setAccessibilityLabel("My Computer")
         title.identifier = NSUserInterfaceItemIdentifier("home.title")

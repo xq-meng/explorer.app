@@ -9,6 +9,42 @@ public enum FileOperationKind: String, Codable, Sendable, CaseIterable {
     case duplicate
     case trash
     case delete
+
+    public var displayName: String {
+        switch self {
+        case .createFolder: "New Folder"
+        case .rename: "Rename"
+        case .copy: "Copy"
+        case .move: "Move"
+        case .duplicate: "Duplicate"
+        case .trash: "Move to Trash"
+        case .delete: "Delete"
+        }
+    }
+
+    public var progressiveName: String {
+        switch self {
+        case .createFolder: "Creating folder"
+        case .rename: "Renaming"
+        case .copy: "Copying"
+        case .move: "Moving"
+        case .duplicate: "Duplicating"
+        case .trash: "Moving to Trash"
+        case .delete: "Deleting"
+        }
+    }
+
+    public var completionName: String {
+        switch self {
+        case .createFolder: "Created folder"
+        case .rename: "Renamed"
+        case .copy: "Copied"
+        case .move: "Moved"
+        case .duplicate: "Duplicated"
+        case .trash: "Moved to Trash"
+        case .delete: "Deleted"
+        }
+    }
 }
 
 /// The action to take when an operation's destination already exists.
@@ -179,6 +215,7 @@ public protocol FileConflictResolving: Sendable {
 public enum FileOperationItemStatus: String, Codable, Sendable {
     case completed
     case skipped
+    case failed
 }
 
 public struct FileOperationItemResult: Codable, Equatable, Sendable {
@@ -186,17 +223,20 @@ public struct FileOperationItemResult: Codable, Equatable, Sendable {
     public let destination: URL?
     public let status: FileOperationItemStatus
     public let replacedExisting: Bool
+    public let failureReason: String?
 
     public init(
         source: URL,
         destination: URL?,
         status: FileOperationItemStatus,
-        replacedExisting: Bool = false
+        replacedExisting: Bool = false,
+        failureReason: String? = nil
     ) {
         self.source = source
         self.destination = destination
         self.status = status
         self.replacedExisting = replacedExisting
+        self.failureReason = failureReason
     }
 }
 
@@ -248,6 +288,8 @@ public struct FileOperationResult: Codable, Equatable, Sendable {
 
     public var completedItems: Int { items.filter { $0.status == .completed }.count }
     public var skippedItems: Int { items.filter { $0.status == .skipped }.count }
+    public var failedItems: Int { items.filter { $0.status == .failed }.count }
+    public var didCompletePartially: Bool { completedItems > 0 && failedItems > 0 }
 }
 
 public enum FileOperationError: Error, Codable, Equatable, Sendable, LocalizedError {
