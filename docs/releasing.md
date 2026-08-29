@@ -18,8 +18,8 @@ Add a repository Actions secret named `HOMEBREW_TAP_TOKEN`. Use a fine-grained p
 Update both version values in `Resources/Info.plist`, commit, then:
 
 ```bash
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
-Replace `0.6.0` with the version you just wrote to the plist.
+Replace `0.6.1` with the version you just wrote to the plist.
