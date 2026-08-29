@@ -78,9 +78,10 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
             editButton.heightAnchor.constraint(equalToConstant: 20),
         ])
 
-        let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(beginEditingPath(_:)))
-        doubleClick.numberOfClicksRequired = 2
-        scrollView.addGestureRecognizer(doubleClick)
+        let click = NSClickGestureRecognizer(target: self, action: #selector(handleBarClick(_:)))
+        click.numberOfClicksRequired = 1
+        click.delaysPrimaryMouseButtonEvents = false
+        addGestureRecognizer(click)
         display(.directory(URL(fileURLWithPath: "/")))
     }
 
@@ -173,7 +174,9 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         button.font = .systemFont(ofSize: 13)
         button.lineBreakMode = .byTruncatingMiddle
         button.toolTip = location.directoryURL?.path ?? BrowserLocation.computerTitle
-        button.setAccessibilityLabel("Go to \(title)")
+        button.setAccessibilityLabel(
+            location == displayedLocation ? "Edit path" : "Go to \(title)"
+        )
         return button
     }
 
@@ -191,7 +194,30 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
 
     @objc private func selectComponent(_ sender: NSButton) {
         guard let location = (sender as? BreadcrumbButton)?.location else { return }
+        if location == displayedLocation {
+            beginEditingPath(nil)
+            return
+        }
         onNavigate?(location)
+    }
+
+    @objc private func handleBarClick(_ gesture: NSClickGestureRecognizer) {
+        guard gesture.state == .ended, !isEditingPath else { return }
+        let location = gesture.location(in: self)
+        if editButton.frame.contains(location) { return }
+        if breadcrumbButton(at: location) != nil { return }
+        beginEditingPath(nil)
+    }
+
+    private func breadcrumbButton(at point: NSPoint) -> BreadcrumbButton? {
+        var view = hitTest(point)
+        while let current = view, current !== self {
+            if let button = current as? BreadcrumbButton {
+                return button
+            }
+            view = current.superview
+        }
+        return nil
     }
 
     @objc private func beginEditingPath(_ sender: Any?) {

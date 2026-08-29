@@ -290,6 +290,36 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertEqual(iconView.visualState, .normal)
     }
 
+    func testSidebarItemRowsUseHoverPresentation() {
+        let controller = BrowserSidebarController()
+        let home = URL(fileURLWithPath: "/tmp/sidebar-home", isDirectory: true)
+        controller.displayRoots([
+            BrowserSidebarLocation(title: "Home", url: home, kind: .favorite),
+        ])
+        let outline = controller.outlineView
+        guard let group = outline.item(atRow: 0),
+              let node = outline.item(atRow: 1) else {
+            return XCTFail("Expected a sidebar group and item")
+        }
+
+        let itemRow = controller.outlineView(outline, rowViewForItem: node)
+        guard let hoverRow = itemRow as? BrowserFileTableRowView else {
+            return XCTFail("Expected a hover-aware sidebar row")
+        }
+        hoverRow.setHovered(true)
+        XCTAssertEqual(hoverRow.visualState, .hovered)
+        hoverRow.isSelected = true
+        XCTAssertEqual(hoverRow.visualState, .selected)
+        hoverRow.resetHover()
+        XCTAssertFalse(hoverRow.isHovered)
+
+        let groupRow = controller.outlineView(outline, rowViewForItem: group) as? BrowserFileTableRowView
+        groupRow?.isGroupRowStyle = true
+        groupRow?.setHovered(true)
+        XCTAssertEqual(groupRow?.visualState, .normal)
+        XCTAssertEqual(groupRow?.isHovered, false)
+    }
+
     func testHiddenAndCutItemsUseDimmedContentWithoutDimmingInteractionFeedback() {
         let hiddenURL = URL(fileURLWithPath: "/tmp/.hidden.txt")
         let visibleURL = URL(fileURLWithPath: "/tmp/visible.txt")
@@ -611,6 +641,33 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertTrue(bar.isEditingPath)
         bar.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: nil))
         XCTAssertFalse(bar.isEditingPath)
+    }
+
+    func testBreadcrumbBarEntersPathEditingOnASingleClick() {
+        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
+        let clickRecognizers = bar.gestureRecognizers.compactMap { $0 as? NSClickGestureRecognizer }
+        XCTAssertEqual(clickRecognizers.count, 1)
+        XCTAssertEqual(clickRecognizers.first?.numberOfClicksRequired, 1)
+        XCTAssertFalse(clickRecognizers.first?.delaysPrimaryMouseButtonEvents ?? true)
+    }
+
+    func testBreadcrumbBarEditsOnCurrentComponentAndNavigatesOnParents() {
+        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
+        bar.display(URL(fileURLWithPath: "/Users/demo/Documents", isDirectory: true))
+        let pathButtons = allDescendants(of: bar, as: NSButton.self).filter { !$0.title.isEmpty }
+        XCTAssertGreaterThanOrEqual(pathButtons.count, 2)
+
+        var navigated: BrowserLocation?
+        bar.onNavigate = { navigated = $0 }
+
+        pathButtons[1].performClick(nil)
+        XCTAssertNotNil(navigated)
+        XCTAssertFalse(bar.isEditingPath)
+
+        navigated = nil
+        pathButtons.last?.performClick(nil)
+        XCTAssertNil(navigated)
+        XCTAssertTrue(bar.isEditingPath)
     }
 
     func testBreadcrumbBarShowsICloudDriveTrail() {

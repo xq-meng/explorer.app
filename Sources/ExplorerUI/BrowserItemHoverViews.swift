@@ -22,7 +22,7 @@ final class BrowserFileTableRowView: NSTableRowView {
     var visualState: BrowserItemVisualState {
         if isTargetForDropOperation { return .dropTarget }
         if isSelected { return .selected }
-        if isHovered { return .hovered }
+        if isHovered && !isGroupRowStyle { return .hovered }
         return .normal
     }
 
@@ -63,6 +63,7 @@ final class BrowserFileTableRowView: NSTableRowView {
     }
 
     func setHovered(_ hovered: Bool) {
+        let hovered = hovered && !isGroupRowStyle
         guard isHovered != hovered else { return }
         isHovered = hovered
         needsDisplay = true

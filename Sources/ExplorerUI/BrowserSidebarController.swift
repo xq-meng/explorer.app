@@ -266,6 +266,29 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         return true
     }
 
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        if let reused = outlineView.makeView(
+            withIdentifier: BrowserFileTableRowView.reuseIdentifier,
+            owner: self
+        ) as? BrowserFileTableRowView {
+            reused.resetHover()
+            reused.selectionHighlightStyle = outlineView.selectionHighlightStyle
+            return reused
+        }
+        let rowView = BrowserFileTableRowView()
+        rowView.identifier = BrowserFileTableRowView.reuseIdentifier
+        rowView.selectionHighlightStyle = outlineView.selectionHighlightStyle
+        return rowView
+    }
+
+    func outlineView(
+        _ outlineView: NSOutlineView,
+        didRemove rowView: NSTableRowView,
+        forRow row: Int
+    ) {
+        (rowView as? BrowserFileTableRowView)?.resetHover()
+    }
+
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         if let group = item as? SidebarGroup {
             let identifier = NSUserInterfaceItemIdentifier("sidebar.group")
