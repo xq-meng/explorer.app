@@ -1,7 +1,5 @@
 # Explorer.app
 
-<img src="Resources/ExplorerIcon.png" width="128" alt="Explorer.app icon">
-
 A native macOS file manager that uses Windows Explorer-style navigation—tabs, a folder tree, a path bar, and a details list—while following macOS conventions such as Quick Look, Trash, and Command shortcuts.
 
 The current builds are **preview releases**: unsigned, Apple Silicon only, and still changing. See [Releases](https://github.com/xq-meng/explorer.app/releases) for the latest version.
