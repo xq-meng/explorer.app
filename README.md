@@ -82,8 +82,8 @@ To publish the next preview after updating both version values in
 `Resources/Info.plist`, for example:
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 The published preview remains ad-hoc signed and unnotarized. Homebrew users must
