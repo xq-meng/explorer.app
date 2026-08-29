@@ -6,6 +6,11 @@ A native macOS file manager that uses Windows Explorer-style navigation—tabs, 
 
 The current builds are **preview releases**: unsigned, Apple Silicon only, and still changing. See [Releases](https://github.com/xq-meng/explorer.app/releases) for the latest version.
 
+<p align="center">
+  <img src="misc/screenshot_light.jpg" alt="My Computer home page in light appearance" width="48%">
+  <img src="misc/screenshot_dark.jpg" alt="My Computer home page in dark appearance" width="48%">
+</p>
+
 ## Features
 
 - Multiple windows and tabs, each with its own history
