@@ -44,6 +44,37 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(controller.outlineView.numberOfRows, 2)
     }
 
+    func testSidebarPlacesNetworkSectionAfterVolumes() {
+        let controller = BrowserSidebarController()
+        let home = URL(fileURLWithPath: "/tmp/sidebar-home", isDirectory: true)
+        let volume = URL(fileURLWithPath: "/", isDirectory: true)
+        let iCloud = URL(
+            fileURLWithPath: "/tmp/sidebar-home/Library/Mobile Documents/com~apple~CloudDocs",
+            isDirectory: true
+        )
+        controller.displayRoots([
+            BrowserSidebarLocation(title: "Home", url: home, kind: .favorite),
+            BrowserSidebarLocation(title: "Macintosh HD", url: volume, kind: .volume),
+            BrowserSidebarLocation(title: "iCloud Drive", url: iCloud, kind: .network),
+        ])
+
+        XCTAssertEqual(controller.outlineView.numberOfRows, 6)
+        let titles = (0..<6).compactMap { row -> String? in
+            guard let item = controller.outlineView.item(atRow: row) else { return nil }
+            let cell = controller.outlineView(
+                controller.outlineView,
+                viewFor: controller.outlineView.tableColumns[0],
+                item: item
+            ) as? NSTableCellView
+            return cell?.textField?.stringValue
+        }
+        XCTAssertEqual(titles, [
+            "Favorites", "Home",
+            "Volumes", "Macintosh HD",
+            "Network", "iCloud Drive",
+        ])
+    }
+
     func testRightPaneNavigationDoesNotChangeSidebarSelection() {
         let controller = ExplorerBrowserViewController()
         controller.loadView()
@@ -236,6 +267,39 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         controller.setCutURLs([])
         let restoredCell = table.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NSTableCellView
         XCTAssertEqual(restoredCell?.textField?.alphaValue, 1)
+    }
+
+    func testNameColumnShowsCloudBadgeForCloudOnlyItems() {
+        let cloudRow = BrowserFileRow(
+            url: URL(fileURLWithPath: "/tmp/icloud/report.txt"),
+            name: "report.txt",
+            modifiedDate: "Today",
+            size: "1 KB",
+            kind: "Text",
+            isNavigable: false,
+            isCloudOnly: true
+        )
+        let localRow = BrowserFileRow(
+            url: URL(fileURLWithPath: "/tmp/icloud/notes.txt"),
+            name: "notes.txt",
+            modifiedDate: "Today",
+            size: "1 KB",
+            kind: "Text",
+            isNavigable: false
+        )
+
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        controller.displayRows([cloudRow, localRow])
+        guard let table = allDescendants(of: controller.view, as: NSTableView.self)
+            .first(where: { !($0 is NSOutlineView) }) else {
+            return XCTFail("Expected the folder contents table")
+        }
+
+        let cloudCell = table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? BrowserFileNameCellView
+        let localCell = table.view(atColumn: 0, row: 1, makeIfNecessary: true) as? BrowserFileNameCellView
+        XCTAssertEqual(cloudCell?.cloudBadgeView.isHidden, false)
+        XCTAssertEqual(localCell?.cloudBadgeView.isHidden, true)
     }
 
     func testConflictAlertUsesSafeDefaultAndApplyToAll() {

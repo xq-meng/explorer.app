@@ -15,10 +15,19 @@ enum FileSystemMetadata {
         .isReadableKey,
         .isWritableKey,
         .volumeIdentifierKey,
-        .fileResourceIdentifierKey
+        .fileResourceIdentifierKey,
+        .isUbiquitousItemKey,
+        .ubiquitousItemDownloadingStatusKey
     ]
 
-    static func item(from url: URL, values: URLResourceValues) -> FileItem {
+    static func isCloudOnly(
+        isUbiquitousItem: Bool?,
+        downloadingStatus: URLUbiquitousItemDownloadingStatus?
+    ) -> Bool {
+        isUbiquitousItem == true && downloadingStatus == .notDownloaded
+    }
+
+    static func item(from url: URL, values: URLResourceValues, name: String? = nil) -> FileItem {
         let isPackage = values.isPackage ?? false
         let isSymbolicLink = values.isSymbolicLink ?? false
         let kind: FileKind
@@ -37,7 +46,7 @@ enum FileSystemMetadata {
         return FileItem(
             id: FileItemID(url: url, resourceValues: values),
             url: url,
-            name: values.name ?? url.lastPathComponent,
+            name: name ?? values.name ?? url.lastPathComponent,
             kind: kind,
             size: values.fileSize.map(Int64.init),
             creationDate: values.creationDate,
@@ -46,7 +55,11 @@ enum FileSystemMetadata {
             isPackage: isPackage,
             isSymbolicLink: isSymbolicLink,
             isReadable: values.isReadable ?? false,
-            isWritable: values.isWritable ?? false
+            isWritable: values.isWritable ?? false,
+            isCloudOnly: isCloudOnly(
+                isUbiquitousItem: values.isUbiquitousItem,
+                downloadingStatus: values.ubiquitousItemDownloadingStatus
+            )
         )
     }
 }

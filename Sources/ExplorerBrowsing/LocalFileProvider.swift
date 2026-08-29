@@ -70,6 +70,15 @@ public actor LocalFileProvider: FileProviderProtocol {
             }
         }
 
+        if ICloudDriveLibraries.isCloudDocsDirectory(directoryURL) {
+            appendICloudLibraries(
+                to: &items,
+                issues: &issues,
+                cloudDocsURL: directoryURL,
+                showsHiddenFiles: options.showsHiddenFiles
+            )
+        }
+
         try checkCancellation()
         items.sort(using: options.sortDescriptor)
         return DirectorySnapshot(directoryURL: directoryURL, items: items, issues: issues)
@@ -80,6 +89,59 @@ private extension LocalFileProvider {
     func checkCancellation() throws {
         if Task.isCancelled {
             throw FileProviderError.cancelled
+        }
+    }
+
+    func appendICloudLibraries(
+        to items: inout [FileItem],
+        issues: inout [DirectoryItemIssue],
+        cloudDocsURL: URL,
+        showsHiddenFiles: Bool
+    ) {
+        let parent = cloudDocsURL.deletingLastPathComponent()
+        let containers: [URL]
+        do {
+            containers = try fileManager.contentsOfDirectory(
+                at: parent,
+                includingPropertiesForKeys: [.localizedNameKey, .isHiddenKey, .isDirectoryKey],
+                options: []
+            )
+        } catch {
+            return
+        }
+
+        var seen = Set(items.map(\.url.standardizedFileURL))
+        for container in containers {
+            do {
+                let containerValues = try container.resourceValues(forKeys: [.localizedNameKey, .isHiddenKey, .isDirectoryKey])
+                guard containerValues.isDirectory == true else { continue }
+                let documentsURL = ICloudDriveLibraries.documentsDirectory(forContainer: container)
+                var isDirectory: ObjCBool = false
+                let hasDocuments = fileManager.fileExists(atPath: documentsURL.path, isDirectory: &isDirectory)
+                    && isDirectory.boolValue
+                guard ICloudDriveLibraries.shouldIncludeContainer(
+                    container,
+                    cloudDocsURL: cloudDocsURL,
+                    isHidden: containerValues.isHidden ?? false,
+                    hasDocumentsDirectory: hasDocuments,
+                    showsHiddenFiles: showsHiddenFiles
+                ) else { continue }
+                guard seen.insert(documentsURL).inserted else { continue }
+
+                let documentValues = try documentsURL.resourceValues(forKeys: FileSystemMetadata.resourceKeys.union([.localizedNameKey]))
+                let displayName = ICloudDriveLibraries.displayName(
+                    containerName: container.lastPathComponent,
+                    containerLocalizedName: containerValues.localizedName,
+                    documentsLocalizedName: documentValues.localizedName
+                )
+                let item = FileSystemMetadata.item(from: documentsURL, values: documentValues, name: displayName)
+                if showsHiddenFiles || !item.isHidden {
+                    items.append(item)
+                }
+            } catch {
+                let details = errorDetails(error)
+                issues.append(DirectoryItemIssue(url: container, code: details.code, message: details.message))
+            }
         }
     }
 

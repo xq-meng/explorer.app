@@ -79,6 +79,29 @@ final class LocalFileProviderTests: XCTestCase {
         }
     }
 
+    func testCloudDocsListingIncludesSiblingAppLibraries() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let mobileDocuments = root.appendingPathComponent("Mobile Documents", isDirectory: true)
+        let cloudDocs = mobileDocuments.appendingPathComponent("com~apple~CloudDocs", isDirectory: true)
+        let stash = mobileDocuments.appendingPathComponent("iCloud~ws~stash~icloud", isDirectory: true)
+        let stashDocuments = stash.appendingPathComponent("Documents", isDirectory: true)
+        let pages = mobileDocuments.appendingPathComponent("com~apple~Pages", isDirectory: true)
+        try FileManager.default.createDirectory(at: cloudDocs.appendingPathComponent("QQ", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: stashDocuments, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pages, withIntermediateDirectories: true)
+        try Data("config".utf8).write(to: stashDocuments.appendingPathComponent("Default.yaml"))
+
+        let snapshot = try await LocalFileProvider().loadDirectory(at: cloudDocs)
+        XCTAssertEqual(Set(snapshot.items.map(\.name)), ["QQ", "stash"])
+        XCTAssertEqual(
+            snapshot.items.first(where: { $0.name == "stash" })?.url,
+            stashDocuments.standardizedFileURL
+        )
+        XCTAssertEqual(snapshot.items.first(where: { $0.name == "stash" })?.kind, .directory)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ExplorerProviderTests-\(UUID().uuidString)", isDirectory: true)

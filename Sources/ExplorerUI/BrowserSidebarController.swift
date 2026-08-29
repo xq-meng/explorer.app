@@ -300,6 +300,12 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
                 NSImage(systemSymbolName: "folder", accessibilityDescription: location.title),
                 true
             )
+        case .network:
+            let symbol = location.url.path.contains("com~apple~CloudDocs") ? "icloud.fill" : "network"
+            return (
+                NSImage(systemSymbolName: symbol, accessibilityDescription: location.title),
+                true
+            )
         }
     }
 
@@ -348,19 +354,21 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
 private enum SidebarSection: Int, CaseIterable {
     case favorites
     case volumes
+    case network
     case folders
 
     var title: String {
         switch self {
         case .favorites: "Favorites"
         case .volumes: "Volumes"
+        case .network: "Network"
         case .folders: "Folders"
         }
     }
 
     func contains(_ kind: BrowserSidebarLocationKind) -> Bool {
         switch (self, kind) {
-        case (.favorites, .favorite), (.volumes, .volume), (.folders, .folder): true
+        case (.favorites, .favorite), (.volumes, .volume), (.network, .network), (.folders, .folder): true
         default: false
         }
     }

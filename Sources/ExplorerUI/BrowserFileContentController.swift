@@ -467,24 +467,30 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
 
         if let column = tableColumn {
             label.stringValue = fileRows[row].value(for: column.identifier.rawValue)
-            label.setAccessibilityLabel("\(column.title): \(label.stringValue)")
-            let isRenaming = isNameColumn && fileRows[row].browserRow.url == renamingURL
+            let rowModel = fileRows[row].browserRow
+            let isRenaming = isNameColumn && rowModel.url == renamingURL
             label.delegate = isNameColumn ? self : nil
             label.isEditable = isRenaming
             label.isSelectable = isRenaming
             label.drawsBackground = isRenaming
             label.backgroundColor = isRenaming ? .textBackgroundColor : .clear
             label.isBezeled = isRenaming
-            let isDimmed = fileRows[row].browserRow.isHidden
-                || cutURLs.contains(fileRows[row].browserRow.url)
+            let isDimmed = rowModel.isHidden || cutURLs.contains(rowModel.url)
             label.alphaValue = isDimmed && !isRenaming
                 ? BrowserItemPresentation.dimmedAlpha
                 : 1
             if isNameColumn, let icon = cell.imageView {
-                icon.image = NSWorkspace.shared.icon(forFile: fileRows[row].browserRow.url.path)
+                icon.image = NSWorkspace.shared.icon(forFile: rowModel.url.path)
                 icon.imageScaling = .scaleProportionallyDown
                 icon.alphaValue = isDimmed ? BrowserItemPresentation.dimmedAlpha : 1
             }
+            if let nameCell = cell as? BrowserFileNameCellView {
+                nameCell.setShowsCloudBadge(rowModel.isCloudOnly, dimmed: isDimmed)
+            }
+            let accessibilityLabel = rowModel.isCloudOnly
+                ? "\(column.title): \(label.stringValue), in iCloud"
+                : "\(column.title): \(label.stringValue)"
+            label.setAccessibilityLabel(accessibilityLabel)
         }
         return cell
     }
@@ -515,29 +521,54 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
         identifier: NSUserInterfaceItemIdentifier,
         showsIcon: Bool
     ) -> NSTableCellView {
-        let cell = NSTableCellView()
+        let cell = showsIcon ? BrowserFileNameCellView() : NSTableCellView()
         cell.identifier = identifier
         let label = NSTextField(labelWithString: "")
         label.translatesAutoresizingMaskIntoConstraints = false
         label.lineBreakMode = .byTruncatingMiddle
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         cell.textField = label
-        cell.addSubview(label)
 
-        if showsIcon {
+        if showsIcon, let nameCell = cell as? BrowserFileNameCellView {
             let icon = NSImageView()
             icon.translatesAutoresizingMaskIntoConstraints = false
             cell.imageView = icon
             cell.addSubview(icon)
+
+            let cloud = nameCell.cloudBadgeView
+            cloud.translatesAutoresizingMaskIntoConstraints = false
+            cloud.image = NSImage(
+                systemSymbolName: "icloud.and.arrow.down",
+                accessibilityDescription: "In iCloud, not downloaded"
+            )
+            cloud.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+            cloud.contentTintColor = .secondaryLabelColor
+            cloud.imageScaling = .scaleProportionallyDown
+            cloud.setContentHuggingPriority(.required, for: .horizontal)
+            cloud.setContentCompressionResistancePriority(.required, for: .horizontal)
+            cloud.setAccessibilityLabel("In iCloud, not downloaded")
+            cloud.isHidden = true
+
+            let nameStack = NSStackView(views: [label, cloud])
+            nameStack.orientation = .horizontal
+            nameStack.alignment = .centerY
+            nameStack.spacing = 4
+            nameStack.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(nameStack)
+
             NSLayoutConstraint.activate([
                 icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 5),
                 icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                 icon.widthAnchor.constraint(equalToConstant: 18),
                 icon.heightAnchor.constraint(equalToConstant: 18),
-                label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                nameStack.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+                nameStack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+                nameStack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                cloud.widthAnchor.constraint(equalToConstant: 14),
+                cloud.heightAnchor.constraint(equalToConstant: 14),
             ])
         } else {
+            cell.addSubview(label)
             NSLayoutConstraint.activate([
                 label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
                 label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),

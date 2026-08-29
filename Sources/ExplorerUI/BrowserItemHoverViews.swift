@@ -206,3 +206,13 @@ final class BrowserIconItemView: NSView {
         self.observedWindow = nil
     }
 }
+
+/// Name-column cell with a trailing iCloud badge for items that are not local.
+final class BrowserFileNameCellView: NSTableCellView {
+    let cloudBadgeView = NSImageView()
+
+    func setShowsCloudBadge(_ showsBadge: Bool, dimmed: Bool) {
+        cloudBadgeView.isHidden = !showsBadge
+        cloudBadgeView.alphaValue = dimmed ? BrowserItemPresentation.dimmedAlpha : 1
+    }
+}

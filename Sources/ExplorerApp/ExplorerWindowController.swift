@@ -239,7 +239,21 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         for volume in mountedVolumeLocations where seenURLs.insert(volume.url).inserted {
             locations.append(volume)
         }
+        for location in networkSidebarLocations where seenURLs.insert(location.url).inserted {
+            locations.append(location)
+        }
         return locations
+    }
+
+    private var networkSidebarLocations: [BrowserSidebarLocation] {
+        NetworkSidebarLocator.items(homeURL: homeURL, isDirectory: Self.isDirectory).map { item in
+            BrowserSidebarLocation(title: item.title, url: item.url, kind: .network)
+        }
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
     private func addFavorite(_ url: URL) {

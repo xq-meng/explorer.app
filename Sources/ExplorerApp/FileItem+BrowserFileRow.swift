@@ -14,7 +14,8 @@ extension BrowserFileRow {
             sizeInBytes: item.size,
             kind: item.displayKind,
             isNavigable: item.kind == .directory && !item.isPackage,
-            isHidden: item.isHidden
+            isHidden: item.isHidden,
+            isCloudOnly: item.isCloudOnly
         )
     }
 }

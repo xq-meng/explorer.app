@@ -9,6 +9,7 @@ public struct BrowserFileRow: Sendable, Equatable {
     public let kind: String
     public let isNavigable: Bool
     public let isHidden: Bool
+    public let isCloudOnly: Bool
 
     public init(
         url: URL,
@@ -18,7 +19,8 @@ public struct BrowserFileRow: Sendable, Equatable {
         sizeInBytes: Int64? = nil,
         kind: String,
         isNavigable: Bool,
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        isCloudOnly: Bool = false
     ) {
         self.url = url.standardizedFileURL
         self.name = name
@@ -28,12 +30,14 @@ public struct BrowserFileRow: Sendable, Equatable {
         self.kind = kind
         self.isNavigable = isNavigable
         self.isHidden = isHidden
+        self.isCloudOnly = isCloudOnly
     }
 }
 
 public enum BrowserSidebarLocationKind: String, Sendable, Equatable {
     case favorite
     case volume
+    case network
     case folder
 }
 

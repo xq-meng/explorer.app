@@ -96,6 +96,7 @@ public struct FileItem: Identifiable, Hashable, Sendable, Codable {
     public let isSymbolicLink: Bool
     public let isReadable: Bool
     public let isWritable: Bool
+    public let isCloudOnly: Bool
 
     public init(
         id: FileItemID,
@@ -109,7 +110,8 @@ public struct FileItem: Identifiable, Hashable, Sendable, Codable {
         isPackage: Bool,
         isSymbolicLink: Bool,
         isReadable: Bool,
-        isWritable: Bool
+        isWritable: Bool,
+        isCloudOnly: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -123,5 +125,6 @@ public struct FileItem: Identifiable, Hashable, Sendable, Codable {
         self.isSymbolicLink = isSymbolicLink
         self.isReadable = isReadable
         self.isWritable = isWritable
+        self.isCloudOnly = isCloudOnly
     }
 }
