@@ -29,6 +29,7 @@ final class BrowserFileContentController: NSViewController {
     private var viewMode: BrowserViewMode = .details
     private var sortDescriptor: BrowserSortDescriptor = .nameAscending
     private var renamingURL: URL?
+    private var cutURLs = Set<URL>()
     private var renameWasCancelled = false
     private var isApplyingSortDescriptor = false
 
@@ -63,6 +64,30 @@ final class BrowserFileContentController: NSViewController {
         collectionView.reloadData()
         selectRows(with: selectedURLs)
         reportSelectionPresentation()
+    }
+
+    func setCutURLs(_ urls: Set<URL>) {
+        let standardizedURLs = Set(urls.map(\.standardizedFileURL))
+        guard cutURLs != standardizedURLs else { return }
+        cutURLs = standardizedURLs
+        guard isViewLoaded else { return }
+
+        tableView.reloadData(
+            forRowIndexes: IndexSet(fileRows.indices),
+            columnIndexes: IndexSet(tableView.tableColumns.indices)
+        )
+        for indexPath in collectionView.indexPathsForVisibleItems() {
+            guard fileRows.indices.contains(indexPath.item),
+                  let item = collectionView.item(at: indexPath) as? BrowserIconCollectionItem else {
+                continue
+            }
+            let row = fileRows[indexPath.item].browserRow
+            item.display(
+                row,
+                thumbnail: thumbnailCache.object(forKey: row.url as NSURL),
+                isCut: cutURLs.contains(row.url)
+            )
+        }
     }
 
     func beginRenaming(_ url: URL) {
@@ -134,7 +159,8 @@ final class BrowserFileContentController: NSViewController {
         thumbnailCache.setObject(image, forKey: target as NSURL)
         let indexPath = IndexPath(item: index, section: 0)
         guard let item = collectionView.item(at: indexPath) as? BrowserIconCollectionItem else { return }
-        item.display(fileRows[index].browserRow, thumbnail: image)
+        let row = fileRows[index].browserRow
+        item.display(row, thumbnail: image, isCut: cutURLs.contains(row.url))
     }
 
     private func configureTableView() {
@@ -424,12 +450,40 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
             label.drawsBackground = isRenaming
             label.backgroundColor = isRenaming ? .textBackgroundColor : .clear
             label.isBezeled = isRenaming
+            let isDimmed = fileRows[row].browserRow.isHidden
+                || cutURLs.contains(fileRows[row].browserRow.url)
+            label.alphaValue = isDimmed && !isRenaming
+                ? BrowserItemPresentation.dimmedAlpha
+                : 1
             if isNameColumn, let icon = cell.imageView {
                 icon.image = NSWorkspace.shared.icon(forFile: fileRows[row].browserRow.url.path)
                 icon.imageScaling = .scaleProportionallyDown
+                icon.alphaValue = isDimmed ? BrowserItemPresentation.dimmedAlpha : 1
             }
         }
         return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        guard tableView === self.tableView else { return nil }
+        if let reused = tableView.makeView(
+            withIdentifier: BrowserFileTableRowView.reuseIdentifier,
+            owner: self
+        ) as? BrowserFileTableRowView {
+            reused.resetHover()
+            return reused
+        }
+        let rowView = BrowserFileTableRowView()
+        rowView.identifier = BrowserFileTableRowView.reuseIdentifier
+        return rowView
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        didRemove rowView: NSTableRowView,
+        forRow row: Int
+    ) {
+        (rowView as? BrowserFileTableRowView)?.resetHover()
     }
 
     private func makeTableCell(
@@ -534,7 +588,11 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
         )
         guard let iconItem = item as? BrowserIconCollectionItem else { return item }
         let row = fileRows[indexPath.item].browserRow
-        iconItem.display(row, thumbnail: thumbnailCache.object(forKey: row.url as NSURL))
+        iconItem.display(
+            row,
+            thumbnail: thumbnailCache.object(forKey: row.url as NSURL),
+            isCut: cutURLs.contains(row.url)
+        )
         return iconItem
     }
 

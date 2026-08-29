@@ -71,10 +71,23 @@ final class ExplorerTabController: NSViewController {
         operationCoordinator = ExplorerTabOperationCoordinator(queue: operationQueue)
         self.clipboard = clipboard
         super.init(nibName: nil, bundle: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(fileClipboardDidChange(_:)),
+            name: FileClipboardService.didChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive(_:)),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
         browser.displaySidebarLocations(sidebarLocations)
         browser.setViewMode(initialViewMode)
         browser.setSortDescriptor(initialSortDescriptor)
         browser.setPreviewVisible(initialShowsPreview)
+        synchronizeCutPresentation()
         configureCallbacks()
     }
 
@@ -528,6 +541,22 @@ final class ExplorerTabController: NSViewController {
         } catch {
             browser.showStatus(error.localizedDescription)
         }
+    }
+
+    @objc private func fileClipboardDidChange(_ notification: Notification) {
+        synchronizeCutPresentation()
+    }
+
+    @objc private func applicationDidBecomeActive(_ notification: Notification) {
+        synchronizeCutPresentation()
+    }
+
+    private func synchronizeCutPresentation() {
+        guard let contents = clipboard.read(), contents.intent == .cut else {
+            browser.setCutURLs([])
+            return
+        }
+        browser.setCutURLs(Set(contents.urls))
     }
 
     private func pasteClipboardContents() {

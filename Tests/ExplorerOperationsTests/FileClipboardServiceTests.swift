@@ -19,6 +19,27 @@ final class FileClipboardServiceTests: XCTestCase {
         XCTAssertEqual(pasteboard.urls, [first, second])
     }
 
+    func testSuccessfulWritePublishesClipboardChange() throws {
+        let pasteboard = InMemoryFileClipboardPasteboard()
+        let service = FileClipboardService(backend: pasteboard)
+        let observer = ClipboardChangeObserver()
+        NotificationCenter.default.addObserver(
+            observer,
+            selector: #selector(ClipboardChangeObserver.clipboardDidChange(_:)),
+            name: FileClipboardService.didChangeNotification,
+            object: service
+        )
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let url = temporaryDirectory.appendingPathComponent("clipboard-change")
+        try Data().write(to: url)
+
+        try service.cut([url])
+
+        XCTAssertEqual(observer.changeCount, 1)
+    }
+
     func testExternalFileURLsDefaultToCopy() throws {
         let pasteboard = InMemoryFileClipboardPasteboard()
         let temporaryDirectory = try makeTemporaryDirectory()
@@ -47,6 +68,15 @@ final class FileClipboardServiceTests: XCTestCase {
             .appendingPathComponent("ExplorerClipboardTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
+    }
+}
+
+@MainActor
+private final class ClipboardChangeObserver: NSObject {
+    private(set) var changeCount = 0
+
+    @objc func clipboardDidChange(_ notification: Notification) {
+        changeCount += 1
     }
 }
 

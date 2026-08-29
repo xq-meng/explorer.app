@@ -129,6 +129,10 @@ public final class ExplorerBrowserViewController: NSViewController {
         fileContentController.display(rows, selecting: selectedURLs)
     }
 
+    public func setCutURLs(_ urls: Set<URL>) {
+        fileContentController.setCutURLs(urls)
+    }
+
     public func beginRenaming(_ url: URL) {
         fileContentController.beginRenaming(url)
     }

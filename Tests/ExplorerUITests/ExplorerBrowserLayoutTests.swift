@@ -161,6 +161,83 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertEqual(collection.selectionIndexes, IndexSet(integer: 0))
     }
 
+    func testFolderItemHoverPresentationPreservesSelectionAndDropPriority() {
+        let rowView = BrowserFileTableRowView()
+        rowView.setHovered(true)
+        XCTAssertEqual(rowView.visualState, .hovered)
+        rowView.isSelected = true
+        XCTAssertEqual(rowView.visualState, .selected)
+        rowView.isTargetForDropOperation = true
+        XCTAssertEqual(rowView.visualState, .dropTarget)
+        rowView.resetHover()
+        XCTAssertFalse(rowView.isHovered)
+
+        let iconItem = BrowserIconCollectionItem()
+        iconItem.loadView()
+        guard let iconView = iconItem.view as? BrowserIconItemView else {
+            return XCTFail("Expected a hover-aware icon item view")
+        }
+        iconView.setHovered(true)
+        XCTAssertEqual(iconView.visualState, .hovered)
+        iconItem.isSelected = true
+        XCTAssertEqual(iconView.visualState, .selected)
+        iconItem.highlightState = .asDropTarget
+        XCTAssertEqual(iconView.visualState, .dropTarget)
+        iconItem.prepareForReuse()
+        XCTAssertEqual(iconView.visualState, .normal)
+    }
+
+    func testHiddenAndCutItemsUseDimmedContentWithoutDimmingInteractionFeedback() {
+        let hiddenURL = URL(fileURLWithPath: "/tmp/.hidden.txt")
+        let visibleURL = URL(fileURLWithPath: "/tmp/visible.txt")
+        let hiddenRow = BrowserFileRow(
+            url: hiddenURL,
+            name: ".hidden.txt",
+            modifiedDate: "Today",
+            size: "1 KB",
+            kind: "Text",
+            isNavigable: false,
+            isHidden: true
+        )
+        let visibleRow = BrowserFileRow(
+            url: visibleURL,
+            name: "visible.txt",
+            modifiedDate: "Today",
+            size: "1 KB",
+            kind: "Text",
+            isNavigable: false
+        )
+
+        let iconItem = BrowserIconCollectionItem()
+        iconItem.loadView()
+        iconItem.display(hiddenRow)
+        XCTAssertTrue(iconItem.view.subviews.allSatisfy {
+            $0.alphaValue == BrowserItemPresentation.dimmedAlpha
+        })
+        iconItem.display(visibleRow, isCut: true)
+        XCTAssertTrue(iconItem.view.subviews.allSatisfy {
+            $0.alphaValue == BrowserItemPresentation.dimmedAlpha
+        })
+        XCTAssertEqual((iconItem.view as? BrowserIconItemView)?.visualState, .normal)
+
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        controller.displayRows([hiddenRow, visibleRow])
+        guard let table = allDescendants(of: controller.view, as: NSTableView.self)
+            .first(where: { !($0 is NSOutlineView) }) else {
+            return XCTFail("Expected the folder contents table")
+        }
+        let hiddenCell = table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? NSTableCellView
+        XCTAssertEqual(hiddenCell?.textField?.alphaValue, BrowserItemPresentation.dimmedAlpha)
+
+        controller.setCutURLs([visibleURL])
+        let cutCell = table.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NSTableCellView
+        XCTAssertEqual(cutCell?.textField?.alphaValue, BrowserItemPresentation.dimmedAlpha)
+        controller.setCutURLs([])
+        let restoredCell = table.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NSTableCellView
+        XCTAssertEqual(restoredCell?.textField?.alphaValue, 1)
+    }
+
     func testConflictAlertUsesSafeDefaultAndApplyToAll() {
         let prompt = BrowserConflictPrompt(
             sourceName: "report.txt",

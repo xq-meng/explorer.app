@@ -8,6 +8,7 @@ public struct BrowserFileRow: Sendable, Equatable {
     public let sizeInBytes: Int64?
     public let kind: String
     public let isNavigable: Bool
+    public let isHidden: Bool
 
     public init(
         url: URL,
@@ -16,7 +17,8 @@ public struct BrowserFileRow: Sendable, Equatable {
         size: String,
         sizeInBytes: Int64? = nil,
         kind: String,
-        isNavigable: Bool
+        isNavigable: Bool,
+        isHidden: Bool = false
     ) {
         self.url = url.standardizedFileURL
         self.name = name
@@ -25,6 +27,7 @@ public struct BrowserFileRow: Sendable, Equatable {
         self.sizeInBytes = sizeInBytes
         self.kind = kind
         self.isNavigable = isNavigable
+        self.isHidden = isHidden
     }
 }
 

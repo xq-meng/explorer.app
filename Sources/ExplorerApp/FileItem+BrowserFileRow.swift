@@ -13,7 +13,8 @@ extension BrowserFileRow {
             size: item.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "—",
             sizeInBytes: item.size,
             kind: item.displayKind,
-            isNavigable: item.kind == .directory && !item.isPackage
+            isNavigable: item.kind == .directory && !item.isPackage,
+            isHidden: item.isHidden
         )
     }
 }

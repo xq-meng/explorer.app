@@ -43,6 +43,9 @@ public final class FileClipboardService {
     public nonisolated static let intentPasteboardType = NSPasteboard.PasteboardType(
         "app.explorer.file-clipboard-intent"
     )
+    public nonisolated static let didChangeNotification = Notification.Name(
+        "ExplorerFileClipboardDidChange"
+    )
 
     private let pasteboard: any FileClipboardPasteboard
 
@@ -67,6 +70,7 @@ public final class FileClipboardService {
         guard pasteboard.replaceContents(with: fileURLs, intent: intent) else {
             throw FileClipboardError.pasteboardWriteFailed
         }
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
     /// Reads ordinary Finder-compatible file URLs. Missing or unrecognized Explorer
