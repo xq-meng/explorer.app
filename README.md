@@ -62,6 +62,10 @@ The bundle is written to `.build/artifacts/Explorer.app`. It is suitable for
 local development; Developer ID signing, notarization, and a distributable DMG
 remain release work.
 
+After changing the 1024×1024 app-icon master, regenerate the multi-resolution
+resource with `./scripts/generate-app-icon.sh`. The master must remain full-canvas
+and opaque so current macOS versions don't add a second system backdrop.
+
 ## Publishing a preview release
 
 Pushing a `v*` tag runs the release workflow. It verifies that the tag matches
