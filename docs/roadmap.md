@@ -1,5 +1,7 @@
 # Explorer.app 开发 Roadmap
 
+面向贡献者的范围、里程碑与质量门槛。用户安装与构建说明见 [README](../README.md)。
+
 > 在 macOS 上实现一款采用 Windows Explorer 交互模型、同时遵循 macOS 系统能力与安全规范的原生文件管理器。
 
 ## 当前实施进度（2026-08-28）
