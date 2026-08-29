@@ -15,7 +15,8 @@ final class BrowserFileContentController: NSViewController {
     var onThumbnailRequest: ((URL) -> Void)?
     var onThumbnailCancellation: ((URL) -> Void)?
     var onFileCommand: ((BrowserFileCommand) -> Void)?
-    var canPerformFileCommand: ((BrowserFileCommand) -> Bool)?
+    var onNavigationCommand: ((BrowserNavigationCommand) -> Void)?
+    var contextMenuState: (() -> BrowserContextMenuState)?
     var onFileURLDrop: ((BrowserFileDrop) -> Bool)?
     var onPromisedFileDrop: ((BrowserPromisedFileDrop) -> Bool)?
     var canAcceptFileURLDrop: (() -> Bool)?
@@ -308,39 +309,61 @@ final class BrowserFileContentController: NSViewController {
     private func makeFileContextMenu() -> NSMenu {
         let menu = NSMenu(title: "File")
         menu.delegate = self
-        addContextItem("Open", command: .open, to: menu)
-        addContextItem("Open in New Tab", command: .openInNewTab, to: menu)
-        addContextItem("Show in Finder", command: .revealInFinder, to: menu)
-        menu.addItem(.separator())
-        addContextItem("New Folder", command: .newFolder, to: menu)
-        menu.addItem(.separator())
-        addContextItem("Rename", command: .rename, to: menu)
-        addContextItem("Duplicate", command: .duplicate, to: menu)
-        menu.addItem(.separator())
-        addContextItem("Copy", command: .copy, to: menu)
-        addContextItem("Cut", command: .cut, to: menu)
-        addContextItem("Paste", command: .paste, to: menu)
-        menu.addItem(.separator())
-        addContextItem("Move to Trash", command: .moveToTrash, to: menu)
-        menu.addItem(.separator())
-        addContextItem("Quick Look", command: .quickLook, to: menu)
+        menu.autoenablesItems = false
         return menu
     }
 
-    private func addContextItem(_ title: String, command: BrowserFileCommand, to menu: NSMenu) {
+    private func addContextItem(_ command: BrowserFileCommand, to menu: NSMenu) {
         let item = NSMenuItem(
-            title: title,
-            action: #selector(performFileCommand(_:)),
+            title: BrowserContextMenuBuilder.title(for: command),
+            action: #selector(performContextMenuAction(_:)),
             keyEquivalent: ""
         )
         item.target = self
-        item.representedObject = FileCommandBox(command)
+        item.representedObject = FileContextMenuActionBox(.file(command))
         menu.addItem(item)
     }
 
-    @objc private func performFileCommand(_ sender: NSMenuItem) {
-        guard let command = (sender.representedObject as? FileCommandBox)?.command else { return }
-        onFileCommand?(command)
+    private func addNavigationItem(_ command: BrowserNavigationCommand, to menu: NSMenu) {
+        let item = NSMenuItem(
+            title: BrowserContextMenuBuilder.title(for: command),
+            action: #selector(performContextMenuAction(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.representedObject = FileContextMenuActionBox(.navigation(command))
+        menu.addItem(item)
+    }
+
+    private func addOpenWithMenu(_ applications: [BrowserOpenWithApplication], to menu: NSMenu) {
+        let item = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Open With")
+        submenu.autoenablesItems = false
+        for application in applications {
+            let appItem = NSMenuItem(
+                title: BrowserContextMenuBuilder.title(for: application),
+                action: #selector(performContextMenuAction(_:)),
+                keyEquivalent: ""
+            )
+            appItem.target = self
+            appItem.representedObject = FileContextMenuActionBox(.file(.openWith(application.url)))
+            let icon = NSWorkspace.shared.icon(forFile: application.url.path)
+            icon.size = NSSize(width: 16, height: 16)
+            appItem.image = icon
+            submenu.addItem(appItem)
+        }
+        item.submenu = submenu
+        menu.addItem(item)
+    }
+
+    @objc private func performContextMenuAction(_ sender: NSMenuItem) {
+        guard let action = (sender.representedObject as? FileContextMenuActionBox)?.action else { return }
+        switch action {
+        case let .file(command):
+            onFileCommand?(command)
+        case let .navigation(command):
+            onNavigationCommand?(command)
+        }
     }
 
     private func validateDrop(_ info: NSDraggingInfo, target: BrowserFileRow?) -> NSDragOperation {
@@ -646,9 +669,19 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
 extension BrowserFileContentController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         selectContextMenuTarget(for: menu)
-        for item in menu.items {
-            guard let command = (item.representedObject as? FileCommandBox)?.command else { continue }
-            item.isEnabled = canPerformFileCommand?(command) ?? false
+        let state = contextMenuState?() ?? .empty
+        menu.removeAllItems()
+        for item in BrowserContextMenuBuilder.items(for: state) {
+            switch item {
+            case let .command(command):
+                addContextItem(command, to: menu)
+            case let .openWithMenu(applications):
+                addOpenWithMenu(applications, to: menu)
+            case let .navigation(command):
+                addNavigationItem(command, to: menu)
+            case .separator:
+                menu.addItem(.separator())
+            }
         }
     }
 
@@ -657,10 +690,12 @@ extension BrowserFileContentController: NSMenuDelegate {
             let row = tableView.clickedRow
             guard fileRows.indices.contains(row) else {
                 tableView.deselectAll(nil)
+                reportSelection()
                 return
             }
             guard !tableView.selectedRowIndexes.contains(row) else { return }
             tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            reportSelection()
             return
         }
 
@@ -679,10 +714,15 @@ extension BrowserFileContentController: NSMenuDelegate {
     }
 }
 
-private final class FileCommandBox: NSObject {
-    let command: BrowserFileCommand
+private enum FileContextMenuAction {
+    case file(BrowserFileCommand)
+    case navigation(BrowserNavigationCommand)
+}
 
-    init(_ command: BrowserFileCommand) {
-        self.command = command
+private final class FileContextMenuActionBox: NSObject {
+    let action: FileContextMenuAction
+
+    init(_ action: FileContextMenuAction) {
+        self.action = action
     }
 }

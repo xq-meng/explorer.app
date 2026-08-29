@@ -14,10 +14,13 @@ public enum BrowserNavigationCommand: Sendable {
 
 /// Commands that operate on the selected file rows. The browser view only
 /// routes these intents; the app layer validates and performs mutations.
-public enum BrowserFileCommand: Sendable {
+public enum BrowserFileCommand: Sendable, Equatable {
     case open
     case openInNewTab
+    case openWith(URL)
     case revealInFinder
+    case copyPath
+    case addToFavorites
     case newFolder
     case rename
     case copy

@@ -16,6 +16,8 @@ final class ExplorerTabController: NSViewController {
     var onOperationCompleted: ((FileOperation, FileOperationResult) -> Void)?
     var onOpenLocationInNewTab: ((URL) -> Void)?
     var onRemoveFavorite: ((URL) -> Void)?
+    var onAddFavorite: ((URL) -> Void)?
+    var canAddFavorite: ((URL) -> Bool)?
 
     private let browser = ExplorerBrowserViewController()
     private let homeURL: URL
@@ -185,8 +187,9 @@ final class ExplorerTabController: NSViewController {
         switch command {
         case .open: !selection.isEmpty
         case .openInNewTab: selectedRows.contains(where: \.isNavigable)
-        case .revealInFinder: !selection.isEmpty
-        case .newFolder: currentDirectoryURL != nil
+        case .openWith: selection.count == 1 && selectedRows.contains(where: { !$0.isNavigable })
+        case .revealInFinder, .copyPath, .newFolder: currentDirectoryURL != nil
+        case .addToFavorites: favoriteURLToAdd() != nil
         case .rename: currentDirectoryURL != nil && selection.count == 1
         case .copy, .cut, .duplicate, .moveToTrash: !selection.isEmpty
         case .paste: currentDirectoryURL != nil && clipboard.read() != nil
@@ -201,8 +204,16 @@ final class ExplorerTabController: NSViewController {
             openSelection()
         case .openInNewTab:
             selectedRows.filter(\.isNavigable).forEach { onOpenLocationInNewTab?($0.url) }
+        case let .openWith(applicationURL):
+            openSelection(with: applicationURL)
         case .revealInFinder:
-            NSWorkspace.shared.activateFileViewerSelecting(Array(selection))
+            let urls = selection.isEmpty ? [currentDirectoryURL].compactMap { $0 } : Array(selection)
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        case .copyPath:
+            copyPaths(selection.isEmpty ? [currentDirectoryURL].compactMap { $0 } : Array(selection))
+        case .addToFavorites:
+            guard let url = favoriteURLToAdd() else { return }
+            onAddFavorite?(url)
         case .newFolder:
             guard let currentDirectoryURL else { return }
             createNewFolder(in: currentDirectoryURL)
@@ -316,9 +327,16 @@ final class ExplorerTabController: NSViewController {
         }
         browser.onFileCommand = { [weak self] command in self?.performFileCommand(command) }
         browser.canPerformFileCommand = { [weak self] command in self?.canPerformFileCommand(command) ?? false }
+        browser.contextMenuState = { [weak self] in self?.makeContextMenuState() ?? .empty }
         browser.onFileURLDrop = { [weak self] drop in self?.accept(drop) ?? false }
         browser.onPromisedFileDrop = { [weak self] drop in self?.accept(drop) ?? false }
         browser.canAcceptFileURLDrop = { [weak self] in self?.currentDirectoryURL != nil }
+        browser.onCopySidebarPath = { [weak self] url in self?.copyPaths([url]) }
+        browser.onRevealSidebarInFinder = { url in
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+        browser.onAddSidebarFavorite = { [weak self] url in self?.onAddFavorite?(url) }
+        browser.canAddSidebarFavorite = { [weak self] url in self?.canAddFavorite?(url) ?? false }
     }
 
     private func loadSidebarChildren(of parentURL: URL) {
@@ -430,6 +448,55 @@ final class ExplorerTabController: NSViewController {
                 browser.showStatus("Unable to open \(row.name) with its default application.")
             }
         }
+    }
+
+    private func openSelection(with applicationURL: URL) {
+        let urls = selectedRows.map(\.url)
+        guard !urls.isEmpty else { return }
+        Task { [weak self] in
+            do {
+                _ = try await NSWorkspace.shared.open(
+                    urls,
+                    withApplicationAt: applicationURL,
+                    configuration: NSWorkspace.OpenConfiguration()
+                )
+            } catch {
+                self?.browser.showStatus(
+                    "Unable to open with \(applicationURL.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func copyPaths(_ urls: [URL]) {
+        let paths = urls.map(\.path).joined(separator: "\n")
+        guard !paths.isEmpty else { return }
+        NSPasteboard.general.setString(paths, forType: .string)
+        let noun = urls.count == 1 ? "path" : "paths"
+        browser.showStatus("Copied \(urls.count) \(noun).")
+    }
+
+    private func favoriteURLToAdd() -> URL? {
+        guard selection.count == 1, let row = selectedRows.first, row.isNavigable else { return nil }
+        guard canAddFavorite?(row.url) == true else { return nil }
+        return row.url
+    }
+
+    private func makeContextMenuState() -> BrowserContextMenuState {
+        let rows = selectedRows
+        return BrowserContextMenuState(
+            hasSelection: !rows.isEmpty,
+            hasNavigableSelection: rows.contains(where: \.isNavigable),
+            isSingleSelection: rows.count == 1,
+            canPaste: canPerformFileCommand(.paste),
+            canAddToFavorites: favoriteURLToAdd() != nil,
+            openWithApplications: openWithApplications(for: rows)
+        )
+    }
+
+    private func openWithApplications(for rows: [BrowserFileRow]) -> [BrowserOpenWithApplication] {
+        guard rows.count == 1, let row = rows.first, !row.isNavigable else { return [] }
+        return WorkspaceOpenWith.applications(for: row.url)
     }
 
     private func createNewFolder(in parentURL: URL) {
@@ -655,6 +722,12 @@ final class ExplorerTabController: NSViewController {
         quickLookCoordinator.updateSelection(selection)
     }
 
+    func beginQuickLookControl(_ panel: QLPreviewPanel) {
+        quickLookCoordinator.beginControl(panel, selection: selection)
+    }
+
+    var canAcceptQuickLookControl: Bool { !selection.isEmpty }
+
     private func toggleQuickLook() {
         quickLookCoordinator.toggle(selection: selection)
     }
@@ -662,19 +735,43 @@ final class ExplorerTabController: NSViewController {
 }
 
 extension ExplorerTabController {
-    nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
-        MainActor.assumeIsolated { !selection.isEmpty }
+    @objc nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { canAcceptQuickLookControl }
     }
 
-    nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+    @objc nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
         MainActor.assumeIsolated {
-            quickLookCoordinator.beginControl(panel, selection: selection)
+            beginQuickLookControl(panel)
         }
     }
 
-    nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+    @objc nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
         // The shared panel may transfer to another tab through the responder
         // chain; no filesystem state is retained by the preview controller.
+    }
+}
+
+private enum WorkspaceOpenWith {
+    static let maximumApplications = 12
+
+    static func applications(for url: URL) -> [BrowserOpenWithApplication] {
+        let workspace = NSWorkspace.shared
+        let defaultApp = workspace.urlForApplication(toOpen: url)?.standardizedFileURL
+        var seen = Set<URL>()
+        let apps = workspace.urlsForApplications(toOpen: url).compactMap { application -> BrowserOpenWithApplication? in
+            let applicationURL = application.standardizedFileURL
+            guard seen.insert(applicationURL).inserted else { return nil }
+            return BrowserOpenWithApplication(
+                url: applicationURL,
+                name: FileManager.default.displayName(atPath: applicationURL.path),
+                isDefault: applicationURL == defaultApp
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.isDefault != rhs.isDefault { return lhs.isDefault }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+        return Array(apps.prefix(maximumApplications))
     }
 }
 

@@ -31,21 +31,33 @@ final class ExplorerQuickLookCoordinator: NSObject {
 
     func toggle(selection: Set<URL>) {
         urls = selection.sorted { $0.path < $1.path }
-        guard !urls.isEmpty, let panel = QLPreviewPanel.shared() else { return }
-        panel.updateController()
-        guard owns(panel) else { return }
-        configure(panel)
-        panel.reloadData()
-        if panel.isVisible {
-            panel.orderOut(nil)
-        } else {
-            panel.makeKeyAndOrderFront(nil)
+        // Context (and menu-bar) tracking keeps the menu in the responder chain
+        // until the current run loop finishes. Showing Quick Look immediately
+        // makes `QLPreviewPanel` look at the menu instead of the tab.
+        DispatchQueue.main.async { [weak self] in
+            self?.togglePanel()
         }
     }
 
     func beginControl(_ panel: QLPreviewPanel, selection: Set<URL>) {
         urls = selection.sorted { $0.path < $1.path }
         configure(panel)
+    }
+
+    private func togglePanel() {
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if panel.isVisible {
+            panel.orderOut(nil)
+            return
+        }
+        guard !urls.isEmpty else { return }
+        ownerWindow()?.makeKeyAndOrderFront(nil)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    private func ownerWindow() -> NSWindow? {
+        (owner as? NSViewController)?.view.window
+            ?? (owner as? NSWindowController)?.window
     }
 
     private func configure(_ panel: QLPreviewPanel) {

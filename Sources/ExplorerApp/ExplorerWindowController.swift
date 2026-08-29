@@ -2,6 +2,7 @@ import AppKit
 import ExplorerBrowsing
 import ExplorerOperations
 import ExplorerUI
+@preconcurrency import QuickLookUI
 
 @MainActor
 final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
@@ -109,6 +110,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         }
         session.onOpenLocationInNewTab = { [weak self] url in self?.newTab(at: url) }
         session.onRemoveFavorite = { [weak self] url in self?.removeFavorite(url) }
+        session.onAddFavorite = { [weak self] url in self?.addFavorite(url) }
+        session.canAddFavorite = { [weak self] url in self?.canAddFavorite(url) ?? false }
         tabViewController.addTabViewItem(item)
         tabViewController.selectedTabViewItemIndex = tabViewController.tabViewItems.count - 1
         sessions.append(session)
@@ -143,7 +146,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     var redoActionName: String? { operationHistory.redoActionName }
     var canAddCurrentFolderToFavorites: Bool {
         guard let url = currentSession?.currentDirectoryURL else { return false }
-        return !allSidebarLocations.contains(where: { $0.url == url })
+        return canAddFavorite(url)
     }
     func performFileCommand(_ command: BrowserFileCommand) { currentSession?.performFileCommand(command) }
     func canPerformFileCommand(_ command: BrowserFileCommand) -> Bool { currentSession?.canPerformFileCommand(command) ?? false }
@@ -159,10 +162,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func addCurrentFolderToFavorites() {
-        guard let url = currentSession?.currentDirectoryURL, canAddCurrentFolderToFavorites else { return }
-        settings.addFavorite(url)
-        refreshSidebarLocations()
-        currentSession?.showStatus("Added \(url.lastPathComponent) to Favorites.")
+        guard let url = currentSession?.currentDirectoryURL else { return }
+        addFavorite(url)
     }
 
     func windowDidBecomeKey(_ notification: Notification) { updateWindowTitle() }
@@ -239,6 +240,19 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
             locations.append(volume)
         }
         return locations
+    }
+
+    private func addFavorite(_ url: URL) {
+        let url = url.standardizedFileURL
+        guard canAddFavorite(url) else { return }
+        settings.addFavorite(url)
+        refreshSidebarLocations()
+        currentSession?.showStatus("Added \(url.lastPathComponent) to Favorites.")
+    }
+
+    private func canAddFavorite(_ url: URL) -> Bool {
+        let url = url.standardizedFileURL
+        return !allSidebarLocations.contains(where: { $0.url == url })
     }
 
     private func removeFavorite(_ url: URL) {
@@ -482,4 +496,16 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     private func updateWindowTitle() { if let session = currentSession { window?.title = "Explorer — \(session.displayTitle)" } }
     private func persistWindowState() { if let window { settings.windowFrame = window.frame } }
+}
+
+extension ExplorerWindowController {
+    @objc nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { currentSession?.canAcceptQuickLookControl == true }
+    }
+
+    @objc nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated { currentSession?.beginQuickLookControl(panel) }
+    }
+
+    @objc nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {}
 }

@@ -17,6 +17,10 @@ public final class ExplorerBrowserViewController: NSViewController {
     public var onCreateFolderInSidebarLocation: ((URL) -> Void)?
     public var onMoveSidebarLocationToTrash: ((URL) -> Void)?
     public var onRemoveSidebarFavorite: ((URL) -> Void)?
+    public var onAddSidebarFavorite: ((URL) -> Void)?
+    public var onCopySidebarPath: ((URL) -> Void)?
+    public var onRevealSidebarInFinder: ((URL) -> Void)?
+    public var canAddSidebarFavorite: ((URL) -> Bool)?
     public var onOpenFileRow: ((BrowserFileRow) -> Void)?
     public var onRenameSubmission: ((URL, String) -> Void)?
     public var onSelectionChange: ((Set<URL>) -> Void)?
@@ -27,6 +31,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     public var onThumbnailCancellation: ((URL) -> Void)?
     public var onFileCommand: ((BrowserFileCommand) -> Void)?
     public var canPerformFileCommand: ((BrowserFileCommand) -> Bool)?
+    public var contextMenuState: (() -> BrowserContextMenuState)?
     public var onFileURLDrop: ((BrowserFileDrop) -> Bool)?
     public var onPromisedFileDrop: ((BrowserPromisedFileDrop) -> Bool)?
     public var canAcceptFileURLDrop: (() -> Bool)?
@@ -56,8 +61,11 @@ public final class ExplorerBrowserViewController: NSViewController {
             self?.onThumbnailCancellation?(url)
         }
         controller.onFileCommand = { [weak self] command in self?.onFileCommand?(command) }
-        controller.canPerformFileCommand = { [weak self] command in
-            self?.canPerformFileCommand?(command) ?? false
+        controller.onNavigationCommand = { [weak self] command in
+            self?.onNavigationCommand?(command)
+        }
+        controller.contextMenuState = { [weak self] in
+            self?.contextMenuState?() ?? .empty
         }
         controller.onFileURLDrop = { [weak self] drop in self?.onFileURLDrop?(drop) ?? false }
         controller.onPromisedFileDrop = { [weak self] drop in
@@ -281,6 +289,18 @@ public final class ExplorerBrowserViewController: NSViewController {
         }
         sidebarController.onRemoveFavorite = { [weak self] url in
             self?.onRemoveSidebarFavorite?(url)
+        }
+        sidebarController.onAddFavorite = { [weak self] url in
+            self?.onAddSidebarFavorite?(url)
+        }
+        sidebarController.onCopyPath = { [weak self] url in
+            self?.onCopySidebarPath?(url)
+        }
+        sidebarController.onRevealInFinder = { [weak self] url in
+            self?.onRevealSidebarInFinder?(url)
+        }
+        sidebarController.canAddFavorite = { [weak self] url in
+            self?.canAddSidebarFavorite?(url) ?? false
         }
 
         let scrollView = NSScrollView()

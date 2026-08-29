@@ -11,6 +11,10 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     var onCreateFolder: ((URL) -> Void)?
     var onMoveToTrash: ((URL) -> Void)?
     var onRemoveFavorite: ((URL) -> Void)?
+    var onAddFavorite: ((URL) -> Void)?
+    var onCopyPath: ((URL) -> Void)?
+    var onRevealInFinder: ((URL) -> Void)?
+    var canAddFavorite: ((URL) -> Bool)?
 
     private var groups: [SidebarGroup] = []
     private var requestedURLs = Set<URL>()
@@ -34,27 +38,59 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
 
         let menu = NSMenu(title: "Folder")
         menu.delegate = self
-        let open = NSMenuItem(title: "Open in New Tab", action: #selector(openInNewTab(_:)), keyEquivalent: "")
-        open.target = self
-        let create = NSMenuItem(title: "New Folder", action: #selector(createFolder(_:)), keyEquivalent: "")
-        create.target = self
-        let trash = NSMenuItem(title: "Move to Trash", action: #selector(moveToTrash(_:)), keyEquivalent: "")
-        trash.target = self
-        trash.identifier = NSUserInterfaceItemIdentifier("sidebar.moveToTrash")
-        let remove = NSMenuItem(title: "Remove from Favorites", action: #selector(removeFavorite(_:)), keyEquivalent: "")
-        remove.target = self
-        remove.identifier = NSUserInterfaceItemIdentifier("sidebar.removeFavorite")
-        menu.addItem(open)
-        menu.addItem(create)
+        menu.autoenablesItems = false
+        menu.addItem(makeSidebarItem(
+            "Open in New Tab",
+            action: #selector(openInNewTab(_:)),
+            identifier: "sidebar.openInNewTab"
+        ))
+        menu.addItem(makeSidebarItem(
+            "Show in Finder",
+            action: #selector(revealInFinder(_:)),
+            identifier: "sidebar.showInFinder"
+        ))
+        menu.addItem(makeSidebarItem(
+            "Copy Path",
+            action: #selector(copyPath(_:)),
+            identifier: "sidebar.copyPath"
+        ))
+        let locationSeparator = NSMenuItem.separator()
+        locationSeparator.identifier = NSUserInterfaceItemIdentifier("sidebar.locationSeparator")
+        menu.addItem(locationSeparator)
+        menu.addItem(makeSidebarItem(
+            "New Folder",
+            action: #selector(createFolder(_:)),
+            identifier: "sidebar.newFolder"
+        ))
         let operationSeparator = NSMenuItem.separator()
         operationSeparator.identifier = NSUserInterfaceItemIdentifier("sidebar.operationSeparator")
         menu.addItem(operationSeparator)
-        menu.addItem(trash)
-        let favoriteSeparator = NSMenuItem.separator()
-        favoriteSeparator.identifier = NSUserInterfaceItemIdentifier("sidebar.favoriteSeparator")
-        menu.addItem(favoriteSeparator)
-        menu.addItem(remove)
+        menu.addItem(makeSidebarItem(
+            "Add to Favorites",
+            action: #selector(addFavorite(_:)),
+            identifier: "sidebar.addFavorite"
+        ))
+        menu.addItem(makeSidebarItem(
+            "Remove from Favorites",
+            action: #selector(removeFavorite(_:)),
+            identifier: "sidebar.removeFavorite"
+        ))
+        let trashSeparator = NSMenuItem.separator()
+        trashSeparator.identifier = NSUserInterfaceItemIdentifier("sidebar.trashSeparator")
+        menu.addItem(trashSeparator)
+        menu.addItem(makeSidebarItem(
+            "Move to Trash",
+            action: #selector(moveToTrash(_:)),
+            identifier: "sidebar.moveToTrash"
+        ))
         outlineView.menu = menu
+    }
+
+    private func makeSidebarItem(_ title: String, action: Selector, identifier: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.identifier = NSUserInterfaceItemIdentifier(identifier)
+        return item
     }
 
     func displayRoots(_ locations: [BrowserSidebarLocation]) {
@@ -133,25 +169,51 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         onMoveToTrash?(node.location.url)
     }
 
+    @objc private func revealInFinder(_ sender: Any?) {
+        guard let node = contextMenuNode else { return }
+        onRevealInFinder?(node.location.url)
+    }
+
+    @objc private func copyPath(_ sender: Any?) {
+        guard let node = contextMenuNode else { return }
+        onCopyPath?(node.location.url)
+    }
+
+    @objc private func addFavorite(_ sender: Any?) {
+        guard let node = contextMenuNode else { return }
+        onAddFavorite?(node.location.url)
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         let clickedRow = outlineView.clickedRow
         if clickedRow >= 0, !outlineView.selectedRowIndexes.contains(clickedRow) {
             outlineView.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
         }
-        let canRemove = contextMenuNode?.location.isRemovable == true
-        let canTrash = contextMenuNode?.location.kind == .folder
+        let node = contextMenuNode
+        let canRemove = node?.location.isRemovable == true
+        let canTrash = node?.location.kind == .folder
+        let canAdd = node.map { canAddFavorite?($0.location.url) ?? false } ?? false
+        let hasNode = node != nil
+        setSidebarItem("sidebar.openInNewTab", hidden: !hasNode, in: menu)
+        setSidebarItem("sidebar.showInFinder", hidden: !hasNode, in: menu)
+        setSidebarItem("sidebar.copyPath", hidden: !hasNode, in: menu)
+        setSidebarItem("sidebar.locationSeparator", hidden: !hasNode, in: menu)
+        setSidebarItem("sidebar.newFolder", hidden: !hasNode, in: menu)
+        setSidebarItem(
+            "sidebar.operationSeparator",
+            hidden: !hasNode || (!canAdd && !canRemove),
+            in: menu
+        )
+        setSidebarItem("sidebar.addFavorite", hidden: !canAdd, in: menu)
+        setSidebarItem("sidebar.removeFavorite", hidden: !canRemove, in: menu)
+        setSidebarItem("sidebar.trashSeparator", hidden: !canTrash, in: menu)
+        setSidebarItem("sidebar.moveToTrash", hidden: !canTrash, in: menu)
+    }
+
+    private func setSidebarItem(_ identifier: String, hidden: Bool, in menu: NSMenu) {
         menu.items.first(where: {
-            $0.identifier == NSUserInterfaceItemIdentifier("sidebar.removeFavorite")
-        })?.isHidden = !canRemove
-        menu.items.first(where: {
-            $0.identifier == NSUserInterfaceItemIdentifier("sidebar.favoriteSeparator")
-        })?.isHidden = !canRemove
-        menu.items.first(where: {
-            $0.identifier == NSUserInterfaceItemIdentifier("sidebar.moveToTrash")
-        })?.isHidden = !canTrash
-        menu.items.first(where: {
-            $0.identifier == NSUserInterfaceItemIdentifier("sidebar.operationSeparator")
-        })?.isHidden = !canTrash
+            $0.identifier == NSUserInterfaceItemIdentifier(identifier)
+        })?.isHidden = hidden
     }
 
     private var contextMenuNode: SidebarNode? {
