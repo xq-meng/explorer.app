@@ -28,6 +28,7 @@ public enum BrowserFileCommand: Sendable, Equatable {
     case paste
     case duplicate
     case moveToTrash
+    case deletePermanently
     case quickLook
 }
 

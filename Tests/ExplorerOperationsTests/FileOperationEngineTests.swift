@@ -122,6 +122,16 @@ final class FileOperationEngineTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
 
+    func testPermanentDeleteRemovesTemporaryTestItem() async throws {
+        let source = root.appendingPathComponent("delete-me.txt")
+        try Data("temporary".utf8).write(to: source)
+        let result = try await engine.execute(.delete(sources: [source]))
+        XCTAssertEqual(result.kind, .delete)
+        XCTAssertEqual(result.completedItems, 1)
+        XCTAssertNil(result.items.first?.destination)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+    }
+
     func testQueueContinuesAfterFailureAndKeepsStableIDs() async throws {
         let queue = FileOperationQueue()
         let missing = root.appendingPathComponent("missing")

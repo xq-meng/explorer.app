@@ -262,6 +262,137 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertFalse(stop.applyToAll)
     }
 
+    func testPermanentDeleteAlertUsesCancelAsTheReturnDefault() {
+        let alert = BrowserPermanentDeleteAlert.makeAlert(itemCount: 1, itemName: "report.txt")
+        XCTAssertEqual(alert.messageText, "Permanently delete “report.txt”?")
+        XCTAssertEqual(alert.buttons.map(\.title), ["Cancel", "Delete"])
+        XCTAssertEqual(alert.buttons[0].keyEquivalent, "\r")
+        XCTAssertEqual(alert.buttons[1].keyEquivalent, "")
+        XCTAssertTrue(alert.buttons[1].hasDestructiveAction)
+        XCTAssertEqual(alert.window.defaultButtonCell, alert.buttons[0].cell)
+        XCTAssertEqual(alert.alertStyle, .critical)
+
+        let many = BrowserPermanentDeleteAlert.makeAlert(itemCount: 3, itemName: nil)
+        XCTAssertEqual(many.messageText, "Permanently delete 3 items?")
+    }
+
+    func testPermanentDeleteAlertTabAndArrowsSwitchCancelAndDelete() {
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .cancel,
+                charactersIgnoringModifiers: "\t",
+                specialKey: nil,
+                keyCode: 48,
+                modifiers: []
+            ),
+            .delete
+        )
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .delete,
+                charactersIgnoringModifiers: "\t",
+                specialKey: nil,
+                keyCode: 48,
+                modifiers: []
+            ),
+            .cancel
+        )
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .cancel,
+                charactersIgnoringModifiers: "\t",
+                specialKey: nil,
+                keyCode: 48,
+                modifiers: .shift
+            ),
+            .delete
+        )
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .cancel,
+                charactersIgnoringModifiers: nil,
+                specialKey: .leftArrow,
+                keyCode: 123,
+                modifiers: []
+            ),
+            .cancel
+        )
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .cancel,
+                charactersIgnoringModifiers: nil,
+                specialKey: .rightArrow,
+                keyCode: 124,
+                modifiers: []
+            ),
+            .delete
+        )
+        XCTAssertEqual(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .delete,
+                charactersIgnoringModifiers: nil,
+                specialKey: .leftArrow,
+                keyCode: 123,
+                modifiers: []
+            ),
+            .cancel
+        )
+        XCTAssertNil(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .cancel,
+                charactersIgnoringModifiers: "\r",
+                specialKey: .carriageReturn,
+                keyCode: 36,
+                modifiers: []
+            )
+        )
+        XCTAssertNil(
+            BrowserPermanentDeleteAlert.nextFocus(
+                current: .cancel,
+                charactersIgnoringModifiers: "\t",
+                specialKey: nil,
+                keyCode: 48,
+                modifiers: .command
+            )
+        )
+
+        let alert = BrowserPermanentDeleteAlert.makeAlert(itemCount: 1, itemName: "report.txt")
+        BrowserPermanentDeleteAlert.applyFocus(.delete, to: alert)
+        XCTAssertEqual(alert.buttons[1].keyEquivalent, "\r")
+        XCTAssertEqual(alert.buttons[0].keyEquivalent, "\u{1b}")
+        XCTAssertEqual(alert.window.defaultButtonCell, alert.buttons[1].cell)
+        BrowserPermanentDeleteAlert.applyFocus(.cancel, to: alert)
+        XCTAssertEqual(alert.buttons[0].keyEquivalent, "\r")
+        XCTAssertEqual(alert.buttons[1].keyEquivalent, "")
+        XCTAssertEqual(alert.window.defaultButtonCell, alert.buttons[0].cell)
+    }
+
+    func testDeleteKeyMovesToTrashAndShiftDeleteDeletesPermanently() {
+        XCTAssertEqual(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: "\u{7F}",
+                specialKey: nil,
+                modifiers: []
+            ),
+            .moveToTrash
+        )
+        XCTAssertEqual(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: "\u{F728}",
+                specialKey: .deleteForward,
+                modifiers: .shift
+            ),
+            .deletePermanently
+        )
+        XCTAssertNil(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: "\u{7F}",
+                specialKey: nil,
+                modifiers: .command
+            )
+        )
+    }
+
     func testConflictAlertHidesApplyToAllForTheLastItem() {
         let prompt = BrowserConflictPrompt(
             sourceName: "report.txt",

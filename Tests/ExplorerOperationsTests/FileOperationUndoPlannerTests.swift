@@ -57,6 +57,15 @@ final class FileOperationUndoPlannerTests: XCTestCase {
         )
     }
 
+    func testPermanentDeleteIsNotOfferedAsUndoable() {
+        let source = URL(fileURLWithPath: "/original/report.txt")
+        let operation = FileOperation.delete(sources: [source])
+        let result = FileOperationResult(kind: .delete, items: [
+            .init(source: source, destination: nil, status: .completed),
+        ])
+        XCTAssertNil(FileOperationUndoPlanner.plan(for: operation, result: result))
+    }
+
     func testReplaceOperationsAreNotOfferedAsUndoable() {
         let source = URL(fileURLWithPath: "/source/report.txt")
         let destination = URL(fileURLWithPath: "/destination/report.txt")

@@ -84,6 +84,7 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func paste(_ sender: Any?) { currentWindowController?.performFileCommand(.paste) }
     @objc func duplicate(_ sender: Any?) { currentWindowController?.performFileCommand(.duplicate) }
     @objc func moveToTrash(_ sender: Any?) { currentWindowController?.performFileCommand(.moveToTrash) }
+    @objc func deletePermanently(_ sender: Any?) { currentWindowController?.performFileCommand(.deletePermanently) }
     @objc func quickLook(_ sender: Any?) { currentWindowController?.performFileCommand(.quickLook) }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -101,6 +102,7 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         case #selector(paste(_:)): return currentWindowController?.canPerformFileCommand(.paste) ?? false
         case #selector(duplicate(_:)): return currentWindowController?.canPerformFileCommand(.duplicate) ?? false
         case #selector(moveToTrash(_:)): return currentWindowController?.canPerformFileCommand(.moveToTrash) ?? false
+        case #selector(deletePermanently(_:)): return currentWindowController?.canPerformFileCommand(.deletePermanently) ?? false
         case #selector(quickLook(_:)): return currentWindowController?.canPerformFileCommand(.quickLook) ?? false
         case #selector(togglePreview(_:)):
             menuItem.state = currentWindowController?.isPreviewVisible == true ? .on : .off
@@ -148,6 +150,12 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let trash = fileMenu.addItem(withTitle: "Move to Trash", action: #selector(moveToTrash(_:)), keyEquivalent: "\u{8}")
         trash.keyEquivalentModifierMask = .command
         trash.target = self
+        let deleteImmediately = fileMenu.addItem(
+            withTitle: "Delete Immediately…",
+            action: #selector(deletePermanently(_:)),
+            keyEquivalent: ""
+        )
+        deleteImmediately.target = self
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeTab(_:)), keyEquivalent: "w").target = self
         let closeWindow = fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")

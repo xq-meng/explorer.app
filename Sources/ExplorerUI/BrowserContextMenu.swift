@@ -72,6 +72,7 @@ public enum BrowserContextMenuBuilder {
         case .paste: "Paste"
         case .duplicate: "Duplicate"
         case .moveToTrash: "Move to Trash"
+        case .deletePermanently: "Delete Immediately…"
         case .quickLook: "Quick Look"
         }
     }

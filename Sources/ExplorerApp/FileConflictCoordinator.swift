@@ -42,6 +42,7 @@ actor FileConflictCoordinator: FileConflictResolving {
         case .move: "Move"
         case .duplicate: "Duplicate"
         case .trash: "Move to Trash"
+        case .delete: "Delete"
         }
     }
 }

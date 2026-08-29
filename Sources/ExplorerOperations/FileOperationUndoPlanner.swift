@@ -56,6 +56,9 @@ public enum FileOperationUndoPlanner {
                 }
             }
             undoOperations = inverse
+
+        case .delete:
+            return nil
         }
 
         guard !undoOperations.isEmpty else { return nil }
@@ -73,6 +76,7 @@ public enum FileOperationUndoPlanner {
         case .copy(let request), .move(let request): request.conflictPolicy == .replace
         case .duplicate(let request): request.conflictPolicy == .replace
         case .trash: false
+        case .delete: true
         }
     }
 
@@ -84,6 +88,7 @@ public enum FileOperationUndoPlanner {
         case .move: "Move"
         case .duplicate: "Duplicate"
         case .trash: "Move to Trash"
+        case .delete: "Delete"
         }
     }
 }

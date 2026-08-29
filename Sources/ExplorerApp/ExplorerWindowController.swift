@@ -373,6 +373,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         case .move: "Moving"
         case .duplicate: "Duplicating"
         case .trash: "Moving to Trash"
+        case .delete: "Deleting"
         }
     }
 
@@ -405,7 +406,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
                 : "\(request.sources.count) items"
         case .duplicate(let request):
             return request.source.lastPathComponent
-        case .trash(let request):
+        case .trash(let request), .delete(let request):
             return request.sources.count == 1
                 ? request.sources[0].lastPathComponent
                 : "\(request.sources.count) items"
@@ -415,7 +416,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private func itemCount(for operation: FileOperation) -> Int {
         switch operation {
         case .copy(let request), .move(let request): request.sources.count
-        case .trash(let request): request.sources.count
+        case .trash(let request), .delete(let request): request.sources.count
         case .createFolder, .rename, .duplicate: 1
         }
     }

@@ -8,6 +8,7 @@ public enum FileOperationKind: String, Codable, Sendable, CaseIterable {
     case move
     case duplicate
     case trash
+    case delete
 }
 
 /// The action to take when an operation's destination already exists.
@@ -79,6 +80,8 @@ public struct TrashRequest: Codable, Equatable, Sendable {
     }
 }
 
+public typealias DeleteRequest = TrashRequest
+
 /// A complete, serializable description of one file operation.
 public enum FileOperation: Codable, Equatable, Sendable {
     case createFolder(CreateFolderRequest)
@@ -87,6 +90,7 @@ public enum FileOperation: Codable, Equatable, Sendable {
     case move(FileBatchRequest)
     case duplicate(DuplicateRequest)
     case trash(TrashRequest)
+    case delete(DeleteRequest)
 
     public var kind: FileOperationKind {
         switch self {
@@ -96,6 +100,7 @@ public enum FileOperation: Codable, Equatable, Sendable {
         case .move: return .move
         case .duplicate: return .duplicate
         case .trash: return .trash
+        case .delete: return .delete
         }
     }
 
@@ -128,13 +133,17 @@ public enum FileOperation: Codable, Equatable, Sendable {
         .trash(TrashRequest(sources: sources))
     }
 
+    public static func delete(sources: [URL]) -> Self {
+        .delete(DeleteRequest(sources: sources))
+    }
+
     public var conflictPolicy: FileConflictPolicy? {
         switch self {
         case .createFolder(let request): request.conflictPolicy
         case .rename(let request): request.conflictPolicy
         case .copy(let request), .move(let request): request.conflictPolicy
         case .duplicate(let request): request.conflictPolicy
-        case .trash: nil
+        case .trash, .delete: nil
         }
     }
 }

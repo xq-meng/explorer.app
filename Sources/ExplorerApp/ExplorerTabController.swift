@@ -191,7 +191,7 @@ final class ExplorerTabController: NSViewController {
         case .revealInFinder, .copyPath, .newFolder: currentDirectoryURL != nil
         case .addToFavorites: favoriteURLToAdd() != nil
         case .rename: currentDirectoryURL != nil && selection.count == 1
-        case .copy, .cut, .duplicate, .moveToTrash: !selection.isEmpty
+        case .copy, .cut, .duplicate, .moveToTrash, .deletePermanently: !selection.isEmpty
         case .paste: currentDirectoryURL != nil && clipboard.read() != nil
         case .quickLook: !selection.isEmpty
         }
@@ -236,6 +236,11 @@ final class ExplorerTabController: NSViewController {
             }
         case .moveToTrash:
             submit(.trash(sources: Array(selection)))
+        case .deletePermanently:
+            let urls = Array(selection)
+            Task { [weak self] in
+                await self?.confirmAndDelete(urls)
+            }
         case .quickLook:
             toggleQuickLook()
         }
@@ -509,6 +514,17 @@ final class ExplorerTabController: NSViewController {
             self.selection = [destination]
             self.pendingInlineRenameURL = destination
         }
+    }
+
+    private func confirmAndDelete(_ urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        let confirmed = await BrowserPermanentDeleteAlert.confirm(
+            itemCount: urls.count,
+            itemName: urls.count == 1 ? urls[0].lastPathComponent : nil,
+            in: view.window
+        )
+        guard confirmed else { return }
+        submit(.delete(sources: urls))
     }
 
     private func url(forSubmittedPath path: String) -> URL {

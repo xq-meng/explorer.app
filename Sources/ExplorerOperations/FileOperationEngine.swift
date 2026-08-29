@@ -143,6 +143,8 @@ public actor FileOperationEngine {
             return try await runDuplicate(request, operationID: operationID, conflictResolver: conflictResolver, progress: progress)
         case .trash(let request):
             return try await runTrash(request, operationID: operationID, progress: progress)
+        case .delete(let request):
+            return try await runDelete(request, operationID: operationID, progress: progress)
         }
     }
 
@@ -436,6 +438,22 @@ public actor FileOperationEngine {
             await Task.yield()
         }
         return FileOperationResult(operationID: operationID, kind: .trash, items: results)
+    }
+
+    private func runDelete(_ request: DeleteRequest, operationID: UUID,
+                           progress: (@Sendable (FileOperationProgress) async -> Void)?) async throws -> FileOperationResult {
+        var results: [FileOperationItemResult] = []
+        for (index, source) in request.sources.enumerated() {
+            try checkCancellation()
+            try checkSource(source)
+            do { try fileManager.removeItem(at: source) }
+            catch { throw map(error, at: source) }
+            results.append(.init(source: source, destination: nil, status: .completed))
+            await report(progress, id: operationID, kind: .delete, completed: index + 1,
+                         total: request.sources.count, item: source)
+            await Task.yield()
+        }
+        return FileOperationResult(operationID: operationID, kind: .delete, items: results)
     }
 
     private enum ConflictResolution {

@@ -21,7 +21,7 @@ final class BrowserFileContentController: NSViewController {
     var onPromisedFileDrop: ((BrowserPromisedFileDrop) -> Bool)?
     var canAcceptFileURLDrop: (() -> Bool)?
 
-    private let tableView = NSTableView()
+    private let tableView = BrowserFileTableView()
     private let collectionView = BrowserDropCollectionView()
     private let listScrollView = NSScrollView()
     private let iconScrollView = NSScrollView()
@@ -188,6 +188,7 @@ final class BrowserFileContentController: NSViewController {
         tableView.doubleAction = #selector(openSelectedFileRow(_:))
         tableView.setAccessibilityLabel("Folder contents")
         tableView.menu = makeFileContextMenu()
+        tableView.onFileKeyCommand = { [weak self] command in self?.onFileCommand?(command) }
         tableView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
@@ -210,6 +211,7 @@ final class BrowserFileContentController: NSViewController {
         collectionView.allowsMultipleSelection = true
         collectionView.setAccessibilityLabel("Folder contents as icons")
         collectionView.menu = makeFileContextMenu()
+        collectionView.onFileKeyCommand = { [weak self] command in self?.onFileCommand?(command) }
         collectionView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
