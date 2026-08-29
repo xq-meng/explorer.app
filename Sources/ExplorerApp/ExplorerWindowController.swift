@@ -23,11 +23,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private var operationHistory = FileOperationHistory()
     private var historyTask: Task<Void, Never>?
     private var didOpenInitialTab = false
+    private let pendingInitialLocations: [BrowserLocation]
     private var operationSnapshots: [UUID: FileOperationQueueSnapshot] = [:]
     private var operationProgress: [UUID: FileOperationProgress] = [:]
     private var operationOrder: [UUID] = []
 
-    init() {
+    init(initialLocations: [BrowserLocation] = [.computer]) {
+        pendingInitialLocations = initialLocations.isEmpty ? [.computer] : initialLocations
         let defaultFrame = NSRect(x: 0, y: 0, width: 1280, height: 760)
         let storedFrame = settings.windowFrame
         let frame: NSRect
@@ -95,6 +97,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         tabViewController.selectedTabViewItemIndex = tabViewController.tabViewItems.count - 1
         sessions.append(session)
         session.start(at: startingLocation)
+    }
+
+    func openLocations(_ locations: [BrowserLocation]) {
+        for location in locations {
+            newTab(at: location)
+        }
     }
 
     private func handle(
@@ -257,11 +265,16 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// A new window always starts at My Computer.
+    /// A new window starts at My Computer unless Launch Services supplied folders.
     private func openInitialTabIfNeeded() {
         guard !didOpenInitialTab else { return }
         didOpenInitialTab = true
-        newTab(at: .computer)
+        for location in pendingInitialLocations {
+            newTab(at: location)
+        }
+        if pendingInitialLocations.count > 1 {
+            tabViewController.selectedTabViewItemIndex = 0
+        }
     }
 
     private func observeOperationEvents() {

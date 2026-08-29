@@ -6,10 +6,32 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var windowControllers: [ExplorerWindowController] = []
     private let settings = ExplorerSettingsStore()
     private var preferencesWindowController: ExplorerPreferencesWindowController?
+    private var didFinishLaunching = false
+    private var pendingLaunchURLs: [URL] = []
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        installMainMenu()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        installMainMenu()
-        openWindow()
+        didFinishLaunching = true
+        let urls = pendingLaunchURLs
+        pendingLaunchURLs.removeAll()
+        if !urls.isEmpty {
+            presentIncomingURLs(urls)
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.windowControllers.isEmpty else { return }
+            self.openWindow()
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if didFinishLaunching {
+            presentIncomingURLs(urls)
+        } else {
+            pendingLaunchURLs.append(contentsOf: urls)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -123,8 +145,20 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             ?? windowControllers.last(where: { $0.window?.isVisible == true })
     }
 
-    private func openWindow() {
-        let controller = ExplorerWindowController()
+    private func presentIncomingURLs(_ urls: [URL]) {
+        let locations = ExplorerOpenURLResolver.locations(for: urls)
+        guard !locations.isEmpty else { return }
+        if let controller = currentWindowController ?? windowControllers.last {
+            controller.openLocations(locations)
+            controller.window?.makeKeyAndOrderFront(self)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        openWindow(initialLocations: locations)
+    }
+
+    private func openWindow(initialLocations: [BrowserLocation] = [.computer]) {
+        let controller = ExplorerWindowController(initialLocations: initialLocations)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windowControllers.removeAll { $0 === controller }
