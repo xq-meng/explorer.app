@@ -12,6 +12,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     private let pathField = NSTextField()
     private let editButton = NSButton()
     private var displayedURL = URL(fileURLWithPath: "/")
+    private var outsideClickMonitor: Any?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -84,6 +85,13 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
 
     required init?(coder: NSCoder) { nil }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            removeOutsideClickMonitor()
+        }
+    }
+
     func display(_ url: URL) {
         displayedURL = url.standardizedFileURL
         pathField.stringValue = displayedURL.path
@@ -93,6 +101,8 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     func focusAddressField() {
         beginEditingPath(nil)
     }
+
+    var isEditingPath: Bool { !pathField.isHidden }
 
     private func rebuildComponents() {
         componentStack.arrangedSubviews.forEach {
@@ -149,11 +159,50 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         scrollView.isHidden = true
         window?.makeFirstResponder(pathField)
         pathField.currentEditor()?.selectAll(nil)
+        installOutsideClickMonitor()
     }
 
     private func endEditingPath() {
+        guard !pathField.isHidden else { return }
+        removeOutsideClickMonitor()
+        pathField.stringValue = displayedURL.path
         pathField.isHidden = true
         scrollView.isHidden = false
+        if let window, window.firstResponder === pathField || window.firstResponder === pathField.currentEditor() {
+            window.makeFirstResponder(window)
+        }
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        endEditingPath()
+    }
+
+    private func installOutsideClickMonitor() {
+        removeOutsideClickMonitor()
+        let owner = Unchecked(value: self)
+        outsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            let windowID = event.window.map { ObjectIdentifier($0) }
+            let location = event.locationInWindow
+            MainActor.assumeIsolated {
+                owner.value.endEditingIfClickIsOutside(windowID: windowID, locationInWindow: location)
+            }
+            return event
+        }
+    }
+
+    private func removeOutsideClickMonitor() {
+        if let outsideClickMonitor {
+            NSEvent.removeMonitor(outsideClickMonitor)
+            self.outsideClickMonitor = nil
+        }
+    }
+
+    private func endEditingIfClickIsOutside(windowID: ObjectIdentifier?, locationInWindow: NSPoint) {
+        guard let window, windowID == ObjectIdentifier(window) else { return }
+        let location = convert(locationInWindow, from: nil)
+        if !bounds.contains(location) {
+            endEditingPath()
+        }
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -183,4 +232,8 @@ private final class BreadcrumbButton: NSButton {
     }
 
     required init?(coder: NSCoder) { nil }
+}
+
+private struct Unchecked<Value>: @unchecked Sendable {
+    let value: Value
 }

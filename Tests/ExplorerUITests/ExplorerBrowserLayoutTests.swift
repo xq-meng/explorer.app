@@ -393,6 +393,15 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         )
     }
 
+    func testBreadcrumbBarLeavesPathEditingWhenEditingEnds() {
+        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
+        bar.display(URL(fileURLWithPath: "/Users/demo/Documents", isDirectory: true))
+        bar.focusAddressField()
+        XCTAssertTrue(bar.isEditingPath)
+        bar.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: nil))
+        XCTAssertFalse(bar.isEditingPath)
+    }
+
     func testConflictAlertHidesApplyToAllForTheLastItem() {
         let prompt = BrowserConflictPrompt(
             sourceName: "report.txt",
