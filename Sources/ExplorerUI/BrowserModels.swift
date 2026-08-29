@@ -35,6 +35,7 @@ public struct BrowserFileRow: Sendable, Equatable {
 }
 
 public enum BrowserSidebarLocationKind: String, Sendable, Equatable {
+    case computer
     case favorite
     case volume
     case network
@@ -76,6 +77,87 @@ public struct BrowserSidebarLocation: Sendable, Equatable {
         self.url = url.standardizedFileURL
         self.kind = kind
         self.isRemovable = isRemovable
+    }
+}
+
+public struct BrowserHomePageItem: Sendable, Equatable {
+    public let title: String
+    public let url: URL
+    public let subtitle: String
+
+    public init(title: String, url: URL, subtitle: String) {
+        self.title = title
+        self.url = url.standardizedFileURL
+        self.subtitle = subtitle
+    }
+}
+
+public struct BrowserHomePageVolume: Sendable, Equatable {
+    public let title: String
+    public let url: URL
+    public let availableCapacity: Int64?
+    public let totalCapacity: Int64?
+
+    public init(
+        title: String,
+        url: URL,
+        availableCapacity: Int64? = nil,
+        totalCapacity: Int64? = nil
+    ) {
+        self.title = title
+        self.url = url.standardizedFileURL
+        self.availableCapacity = availableCapacity
+        self.totalCapacity = totalCapacity
+    }
+
+    public var caption: String? {
+        BrowserVolumeCapacity.caption(available: availableCapacity, total: totalCapacity)
+    }
+
+    public var usedFraction: Double? {
+        BrowserVolumeCapacity.usedFraction(available: availableCapacity, total: totalCapacity)
+    }
+}
+
+public struct BrowserHomePageModel: Sendable, Equatable {
+    public var favorites: [BrowserHomePageItem]
+    public var volumes: [BrowserHomePageVolume]
+    public var network: [BrowserHomePageItem]
+
+    public init(
+        favorites: [BrowserHomePageItem] = [],
+        volumes: [BrowserHomePageVolume] = [],
+        network: [BrowserHomePageItem] = []
+    ) {
+        self.favorites = favorites
+        self.volumes = volumes
+        self.network = network
+    }
+
+    public static let empty = BrowserHomePageModel()
+}
+
+public enum BrowserVolumeCapacity {
+    public static func caption(available: Int64?, total: Int64?) -> String? {
+        switch (available, total) {
+        case let (available?, total?) where total > 0:
+            "\(byteCount(available)) free of \(byteCount(total))"
+        case let (available?, _):
+            "\(byteCount(available)) free"
+        case let (_, total?):
+            byteCount(total)
+        default:
+            nil
+        }
+    }
+
+    public static func usedFraction(available: Int64?, total: Int64?) -> Double? {
+        guard let available, let total, total > 0 else { return nil }
+        return min(1, max(0, 1 - Double(available) / Double(total)))
+    }
+
+    private static func byteCount(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 }
 

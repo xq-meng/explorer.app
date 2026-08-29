@@ -94,6 +94,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     }
 
     func displayRoots(_ locations: [BrowserSidebarLocation]) {
+        let selectedURL = (outlineView.item(atRow: outlineView.selectedRow) as? SidebarNode)?.location.url
         let existingNodes = Dictionary(uniqueKeysWithValues: groups
             .flatMap(\.children)
             .map { ($0.location.url, $0) })
@@ -115,6 +116,21 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         }
         outlineView.reloadData()
         groups.forEach { outlineView.expandItem($0) }
+        if let selectedURL {
+            select(selectedURL)
+        }
+    }
+
+    func select(_ url: URL) {
+        let target = BrowserComputerLocation.matches(url) ? BrowserComputerLocation.url : url.standardizedFileURL
+        guard let node = findNode(target) else { return }
+        let row = outlineView.row(forItem: node)
+        guard row >= 0 else { return }
+        let action = outlineView.action
+        outlineView.action = nil
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        outlineView.scrollRowToVisible(row)
+        outlineView.action = action
     }
 
     func displayChildren(_ locations: [BrowserSidebarLocation], for parentURL: URL) {
@@ -193,15 +209,17 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         let canRemove = node?.location.isRemovable == true
         let canTrash = node?.location.kind == .folder
         let canAdd = node.map { canAddFavorite?($0.location.url) ?? false } ?? false
+        let isComputer = node?.location.kind == .computer
         let hasNode = node != nil
+        let hasFileLocation = hasNode && !isComputer
         setSidebarItem("sidebar.openInNewTab", hidden: !hasNode, in: menu)
-        setSidebarItem("sidebar.showInFinder", hidden: !hasNode, in: menu)
-        setSidebarItem("sidebar.copyPath", hidden: !hasNode, in: menu)
-        setSidebarItem("sidebar.locationSeparator", hidden: !hasNode, in: menu)
-        setSidebarItem("sidebar.newFolder", hidden: !hasNode, in: menu)
+        setSidebarItem("sidebar.showInFinder", hidden: !hasFileLocation, in: menu)
+        setSidebarItem("sidebar.copyPath", hidden: !hasFileLocation, in: menu)
+        setSidebarItem("sidebar.locationSeparator", hidden: !hasFileLocation, in: menu)
+        setSidebarItem("sidebar.newFolder", hidden: !hasFileLocation, in: menu)
         setSidebarItem(
             "sidebar.operationSeparator",
-            hidden: !hasNode || (!canAdd && !canRemove),
+            hidden: !hasFileLocation || (!canAdd && !canRemove),
             in: menu
         )
         setSidebarItem("sidebar.addFavorite", hidden: !canAdd, in: menu)
@@ -237,6 +255,7 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         if item is SidebarGroup { return true }
         guard let node = item as? SidebarNode else { return false }
+        if node.location.kind == .computer { return false }
         return node.children == nil || !(node.children?.isEmpty ?? true)
     }
 
@@ -262,7 +281,9 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         let cell = (outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView)
             ?? makeCell(identifier: identifier)
         cell.textField?.stringValue = node.location.title
-        cell.textField?.toolTip = node.location.url.path
+        cell.textField?.toolTip = node.location.kind == .computer
+            ? node.location.title
+            : node.location.url.path
         let icon = sidebarIcon(for: node.location)
         cell.imageView?.image = icon.image
         cell.imageView?.contentTintColor = icon.isTemplate ? .secondaryLabelColor : nil
@@ -279,6 +300,11 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
 
     private func sidebarIcon(for location: BrowserSidebarLocation) -> (image: NSImage?, isTemplate: Bool) {
         switch location.kind {
+        case .computer:
+            return (
+                NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: location.title),
+                true
+            )
         case .volume:
             return (
                 NSImage(systemSymbolName: "externaldrive.fill", accessibilityDescription: location.title),
@@ -368,7 +394,8 @@ private enum SidebarSection: Int, CaseIterable {
 
     func contains(_ kind: BrowserSidebarLocationKind) -> Bool {
         switch (self, kind) {
-        case (.favorites, .favorite), (.volumes, .volume), (.network, .network), (.folders, .folder): true
+        case (.favorites, .favorite), (.favorites, .computer),
+             (.volumes, .volume), (.network, .network), (.folders, .folder): true
         default: false
         }
     }

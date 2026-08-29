@@ -22,6 +22,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     public var onRevealSidebarInFinder: ((URL) -> Void)?
     public var canAddSidebarFavorite: ((URL) -> Bool)?
     public var onOpenFileRow: ((BrowserFileRow) -> Void)?
+    public var onHomePageOpen: ((URL) -> Void)?
     public var onRenameSubmission: ((URL, String) -> Void)?
     public var onSelectionChange: ((Set<URL>) -> Void)?
     public var onSidebarWidthChange: ((CGFloat) -> Void)?
@@ -43,6 +44,11 @@ public final class ExplorerBrowserViewController: NSViewController {
     private let statusSummaryLabel = NSTextField(labelWithString: "0 items")
     private let sidebarController = BrowserSidebarController()
     private let previewView = BrowserPreviewView()
+    private lazy var homePageController: BrowserHomePageController = {
+        let controller = BrowserHomePageController()
+        controller.onOpenLocation = { [weak self] url in self?.onHomePageOpen?(url) }
+        return controller
+    }()
     private lazy var fileContentController: BrowserFileContentController = {
         let controller = BrowserFileContentController()
         controller.onOpenFileRow = { [weak self] row in self?.onOpenFileRow?(row) }
@@ -122,6 +128,32 @@ public final class ExplorerBrowserViewController: NSViewController {
         showStatus("Showing \(path)")
     }
 
+    public func displayHomePage(_ model: BrowserHomePageModel) {
+        loadViewIfNeeded()
+        homePageController.display(model)
+        homePageController.view.isHidden = false
+        fileContentController.view.isHidden = true
+        breadcrumbBar.display(BrowserComputerLocation.url)
+        showStatus("Home view")
+        statusSummaryLabel.stringValue = ""
+        previewView.display([])
+        setViewModeControlVisible(false)
+    }
+
+    public func beginLeavingHomePage(loadingPath: String) {
+        homePageController.view.isHidden = true
+        fileContentController.view.isHidden = false
+        fileContentController.display([], selecting: [])
+        setViewModeControlVisible(true)
+        breadcrumbBar.display(URL(fileURLWithPath: loadingPath).standardizedFileURL)
+        showStatus("Loading \(loadingPath)…")
+        statusSummaryLabel.stringValue = ""
+    }
+
+    public func selectSidebarLocation(_ url: URL) {
+        sidebarController.select(url)
+    }
+
     /// Displays a brief accessibility-friendly status message in the footer.
     public func showStatus(_ message: String) {
         statusLabel.stringValue = message
@@ -134,7 +166,10 @@ public final class ExplorerBrowserViewController: NSViewController {
     }
 
     public func displayRows(_ rows: [BrowserFileRow], selecting selectedURLs: Set<URL> = []) {
+        homePageController.view.isHidden = true
+        fileContentController.view.isHidden = false
         fileContentController.display(rows, selecting: selectedURLs)
+        setViewModeControlVisible(true)
     }
 
     public func setCutURLs(_ urls: Set<URL>) {
@@ -149,6 +184,10 @@ public final class ExplorerBrowserViewController: NSViewController {
         viewMode = mode
         viewModeControl.selectedSegment = mode == .icons ? 1 : 0
         fileContentController.setViewMode(mode)
+    }
+
+    private func setViewModeControlVisible(_ isVisible: Bool) {
+        viewModeControl.isHidden = !isVisible
     }
 
     public func setSortDescriptor(_ descriptor: BrowserSortDescriptor) {
@@ -331,19 +370,40 @@ public final class ExplorerBrowserViewController: NSViewController {
         if fileContentController.parent !== self {
             addChild(fileContentController)
         }
+        if homePageController.parent !== self {
+            addChild(homePageController)
+        }
         let contentView = fileContentController.view
         contentView.translatesAutoresizingMaskIntoConstraints = false
+        let homeView = homePageController.view
+        homeView.translatesAutoresizingMaskIntoConstraints = false
+        homeView.isHidden = true
+
+        let contentHost = NSView()
+        contentHost.translatesAutoresizingMaskIntoConstraints = false
+        contentHost.addSubview(contentView)
+        contentHost.addSubview(homeView)
+        NSLayoutConstraint.activate([
+            contentView.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: contentHost.topAnchor),
+            contentView.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
+            homeView.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
+            homeView.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
+            homeView.topAnchor.constraint(equalTo: contentHost.topAnchor),
+            homeView.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
+        ])
 
         let browserSplitView = NSSplitView()
         browserSplitView.isVertical = true
         browserSplitView.dividerStyle = .thin
         browserSplitView.translatesAutoresizingMaskIntoConstraints = false
-        browserSplitView.addArrangedSubview(contentView)
+        browserSplitView.addArrangedSubview(contentHost)
         if isPreviewVisible {
             browserSplitView.addArrangedSubview(previewView)
         }
         browserSplitView.delegate = self
-        let contentMinimum = contentView.widthAnchor.constraint(greaterThanOrEqualToConstant: 300)
+        let contentMinimum = contentHost.widthAnchor.constraint(greaterThanOrEqualToConstant: 300)
         let previewMinimum = previewView.widthAnchor.constraint(greaterThanOrEqualToConstant: 210)
         let previewMaximum = previewView.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
         [contentMinimum, previewMinimum, previewMaximum].forEach {
@@ -429,6 +489,7 @@ public final class ExplorerBrowserViewController: NSViewController {
         viewModeControl.target = self
         viewModeControl.action = #selector(changeViewMode(_:))
         viewModeControl.setAccessibilityLabel("View mode")
+        viewModeControl.identifier = NSUserInterfaceItemIdentifier("browser.viewMode")
     }
 
     private func configureStatusLabels() {

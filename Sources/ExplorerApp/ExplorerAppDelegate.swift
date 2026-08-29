@@ -95,6 +95,8 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         case #selector(redo(_:)):
             menuItem.title = currentWindowController?.redoActionName.map { "Redo \($0)" } ?? "Redo"
             return currentWindowController?.canRedo ?? false
+        case #selector(showDetails(_:)), #selector(showIcons(_:)):
+            return currentWindowController?.canChangeViewMode ?? false
         case #selector(newFolder(_:)): return currentWindowController?.canPerformFileCommand(.newFolder) ?? false
         case #selector(rename(_:)): return currentWindowController?.canPerformFileCommand(.rename) ?? false
         case #selector(copy(_:)): return currentWindowController?.canPerformFileCommand(.copy) ?? false

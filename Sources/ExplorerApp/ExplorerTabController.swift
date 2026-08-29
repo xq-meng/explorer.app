@@ -18,6 +18,7 @@ final class ExplorerTabController: NSViewController {
     var onRemoveFavorite: ((URL) -> Void)?
     var onAddFavorite: ((URL) -> Void)?
     var canAddFavorite: ((URL) -> Bool)?
+    var onHomePageRefresh: (() -> Void)?
 
     private let browser = ExplorerBrowserViewController()
     private let homeURL: URL
@@ -45,6 +46,7 @@ final class ExplorerTabController: NSViewController {
     private var didStart = false
     private var sidebarLoadTasks: [URL: Task<Void, Never>] = [:]
     private var pendingInlineRenameURL: URL?
+    private var homePageModel: BrowserHomePageModel
     private let filePromiseQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "app.explorer.file-promises"
@@ -61,6 +63,7 @@ final class ExplorerTabController: NSViewController {
         initialShowsPreview: Bool,
         initialShowsHiddenFiles: Bool,
         sidebarWidth: CGFloat?,
+        homePageModel: BrowserHomePageModel = .empty,
         operationQueue: FileOperationQueue,
         clipboard: FileClipboardService
     ) {
@@ -70,6 +73,7 @@ final class ExplorerTabController: NSViewController {
         showsPreview = initialShowsPreview
         showsHiddenFiles = initialShowsHiddenFiles
         initialSidebarWidth = sidebarWidth
+        self.homePageModel = homePageModel
         operationCoordinator = ExplorerTabOperationCoordinator(queue: operationQueue)
         self.clipboard = clipboard
         super.init(nibName: nil, bundle: nil)
@@ -122,7 +126,14 @@ final class ExplorerTabController: NSViewController {
 
     var displayTitle: String {
         guard let currentDirectoryURL else { return "Loading…" }
+        if BrowserComputerLocation.matches(currentDirectoryURL) {
+            return BrowserComputerLocation.title
+        }
         return currentDirectoryURL.lastPathComponent.isEmpty ? currentDirectoryURL.path : currentDirectoryURL.lastPathComponent
+    }
+
+    private var isShowingComputer: Bool {
+        currentDirectoryURL.map(BrowserComputerLocation.matches) ?? false
     }
 
     var selectedURLs: Set<URL> { selection }
@@ -145,11 +156,14 @@ final class ExplorerTabController: NSViewController {
     }
 
     func setViewMode(_ mode: BrowserViewMode) {
+        guard !isShowingComputer else { return }
         viewMode = mode
         browser.setViewMode(mode)
         if mode == .details { thumbnailCoordinator.cancelAll() }
         onViewModeChange?(mode)
     }
+
+    var canChangeViewMode: Bool { !isShowingComputer }
 
     func setSortDescriptor(_ descriptor: BrowserSortDescriptor) {
         guard sortDescriptor != descriptor else { return }
@@ -180,6 +194,13 @@ final class ExplorerTabController: NSViewController {
         browser.displaySidebarLocations(locations)
     }
 
+    func updateHomePage(_ model: BrowserHomePageModel) {
+        homePageModel = model
+        if isShowingComputer, loadTask == nil {
+            browser.displayHomePage(model)
+        }
+    }
+
     func showStatus(_ message: String) { browser.showStatus(message) }
     func refreshContents() { perform(.refresh) }
 
@@ -188,11 +209,11 @@ final class ExplorerTabController: NSViewController {
         case .open: !selection.isEmpty
         case .openInNewTab: selectedRows.contains(where: \.isNavigable)
         case .openWith: selection.count == 1 && selectedRows.contains(where: { !$0.isNavigable })
-        case .revealInFinder, .copyPath, .newFolder: currentDirectoryURL != nil
+        case .revealInFinder, .copyPath, .newFolder: currentDirectoryURL != nil && !isShowingComputer
         case .addToFavorites: favoriteURLToAdd() != nil
-        case .rename: currentDirectoryURL != nil && selection.count == 1
+        case .rename: currentDirectoryURL != nil && !isShowingComputer && selection.count == 1
         case .copy, .cut, .duplicate, .moveToTrash, .deletePermanently: !selection.isEmpty
-        case .paste: currentDirectoryURL != nil && clipboard.read() != nil
+        case .paste: currentDirectoryURL != nil && !isShowingComputer && clipboard.read() != nil
         case .quickLook: !selection.isEmpty
         }
     }
@@ -259,12 +280,27 @@ final class ExplorerTabController: NSViewController {
             guard let next = navigationHistory.next else { browser.showStatus("No later folder in history."); return }
             requestDirectory(next, origin: .forward)
         case .up:
-            guard let currentDirectoryURL else { requestDirectory(homeURL, origin: .newLocation); return }
+            guard let currentDirectoryURL else {
+                requestDirectory(BrowserComputerLocation.url, origin: .newLocation)
+                return
+            }
+            if BrowserComputerLocation.matches(currentDirectoryURL) {
+                browser.showStatus("Already at My Computer.")
+                return
+            }
             let parent = currentDirectoryURL.deletingLastPathComponent().standardizedFileURL
-            guard parent != currentDirectoryURL else { browser.showStatus("Already at the top-level folder."); return }
+            if currentDirectoryURL.path == "/" || parent == currentDirectoryURL {
+                requestDirectory(BrowserComputerLocation.url, origin: .newLocation)
+                return
+            }
             requestDirectory(parent, origin: .newLocation)
         case .refresh:
-            requestDirectory(currentDirectoryURL ?? homeURL, origin: .refresh)
+            if isShowingComputer {
+                onHomePageRefresh?()
+                showComputer(origin: .refresh)
+                return
+            }
+            requestDirectory(currentDirectoryURL ?? BrowserComputerLocation.url, origin: .refresh)
         }
     }
 
@@ -296,6 +332,7 @@ final class ExplorerTabController: NSViewController {
             self?.requestDirectory(url, origin: .newLocation)
         }
         browser.onSidebarLocationSelection = { [weak self] location in self?.requestDirectory(location.url, origin: .newLocation) }
+        browser.onHomePageOpen = { [weak self] url in self?.requestDirectory(url, origin: .newLocation) }
         browser.onSidebarExpansionRequest = { [weak self] url in self?.loadSidebarChildren(of: url) }
         browser.onOpenSidebarLocationInNewTab = { [weak self] url in self?.onOpenLocationInNewTab?(url) }
         browser.onCreateFolderInSidebarLocation = { [weak self] url in self?.createNewFolder(in: url) }
@@ -335,7 +372,10 @@ final class ExplorerTabController: NSViewController {
         browser.contextMenuState = { [weak self] in self?.makeContextMenuState() ?? .empty }
         browser.onFileURLDrop = { [weak self] drop in self?.accept(drop) ?? false }
         browser.onPromisedFileDrop = { [weak self] drop in self?.accept(drop) ?? false }
-        browser.canAcceptFileURLDrop = { [weak self] in self?.currentDirectoryURL != nil }
+        browser.canAcceptFileURLDrop = { [weak self] in
+            guard let self else { return false }
+            return self.currentDirectoryURL != nil && !self.isShowingComputer
+        }
         browser.onCopySidebarPath = { [weak self] url in self?.copyPaths([url]) }
         browser.onRevealSidebarInFinder = { url in
             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -374,6 +414,10 @@ final class ExplorerTabController: NSViewController {
     }
 
     private func requestDirectory(_ url: URL, origin: NavigationOrigin) {
+        if BrowserComputerLocation.matches(url) {
+            showComputer(origin: origin)
+            return
+        }
         let destination = url.standardizedFileURL
         thumbnailCoordinator.cancelAll()
         loadGeneration &+= 1
@@ -382,6 +426,9 @@ final class ExplorerTabController: NSViewController {
         if origin != .refresh { stopMonitoring() }
         searchCoordinator.cancel()
         browser.clearSearchField()
+        if isShowingComputer {
+            browser.beginLeavingHomePage(loadingPath: destination.path)
+        }
         browser.showStatus("Loading \(destination.path)…")
         let loader = directoryLoader
         let options = directoryLoadOptions
@@ -395,7 +442,11 @@ final class ExplorerTabController: NSViewController {
             } catch {
                 guard !Task.isCancelled, let self, generation == self.loadGeneration else { return }
                 self.browser.showStatus(error.localizedDescription)
-                if let currentDirectoryURL = self.currentDirectoryURL { self.startMonitoring(currentDirectoryURL) }
+                if self.isShowingComputer {
+                    self.browser.displayHomePage(self.homePageModel)
+                } else if let currentDirectoryURL = self.currentDirectoryURL {
+                    self.startMonitoring(currentDirectoryURL)
+                }
             }
         }
     }
@@ -427,6 +478,30 @@ final class ExplorerTabController: NSViewController {
         if origin != .refresh || directoryMonitor == nil {
             startMonitoring(snapshot.directoryURL)
         }
+    }
+
+    private func showComputer(origin: NavigationOrigin) {
+        thumbnailCoordinator.cancelAll()
+        loadGeneration &+= 1
+        loadTask?.cancel()
+        loadTask = nil
+        stopMonitoring()
+        searchCoordinator.cancel()
+        browser.clearSearchField()
+        let destination = BrowserComputerLocation.url
+        guard navigationHistory.commit(
+            origin: origin,
+            current: currentDirectoryURL,
+            destination: destination
+        ) else { return }
+        currentDirectoryURL = destination
+        currentSnapshot = nil
+        selection = []
+        pendingInlineRenameURL = nil
+        browser.displayHomePage(homePageModel)
+        browser.selectSidebarLocation(destination)
+        onTitleChange?(displayTitle)
+        onSelectionChange?([])
     }
 
     private func open(_ row: BrowserFileRow) {
@@ -537,7 +612,11 @@ final class ExplorerTabController: NSViewController {
 
     private func filterCurrentDirectory(matching text: String) {
         guard let currentSnapshot else {
-            browser.showStatus("Wait for the folder to finish loading before searching.")
+            if isShowingComputer {
+                browser.showStatus("Search is not available on My Computer.")
+            } else {
+                browser.showStatus("Wait for the folder to finish loading before searching.")
+            }
             return
         }
         searchCoordinator.search(
@@ -560,6 +639,10 @@ final class ExplorerTabController: NSViewController {
 
     private func restoreUnfilteredSnapshot() {
         searchCoordinator.cancel()
+        if isShowingComputer {
+            browser.displayHomePage(homePageModel)
+            return
+        }
         guard let currentSnapshot else { return }
         selection.formIntersection(Set(currentSnapshot.items.map(\.url)))
         browser.displayRows(currentSnapshot.items.map(BrowserFileRow.init), selecting: selection)

@@ -15,7 +15,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private let clipboard = FileClipboardService()
     private let mountedVolumeService = MountedVolumeService()
     private var sessions: [ExplorerTabController] = []
-    private var mountedVolumeLocations: [BrowserSidebarLocation] = []
+    private var mountedVolumes: [MountedVolumeMetadata] = []
     private var operationEventTask: Task<Void, Never>?
     private var volumeLoadTask: Task<Void, Never>?
     private var didStartVolumeLoading = false
@@ -71,7 +71,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     func perform(_ command: BrowserNavigationCommand) { currentSession?.perform(command) }
 
     func newTab(at url: URL? = nil, restoring state: ExplorerSettingsStore.TabState? = nil) {
-        let startingURL = state?.url ?? url ?? currentSession?.currentDirectoryURL ?? homeURL
+        let startingURL = state?.url ?? url ?? currentSession?.currentDirectoryURL ?? BrowserComputerLocation.url
         let initialViewMode = state?.viewMode ?? currentSession?.viewMode ?? restoredViewMode
         let initialSortDescriptor = state?.sortDescriptor ?? currentSession?.sortDescriptor ?? .nameAscending
         let session = ExplorerTabController(
@@ -82,6 +82,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
             initialShowsPreview: restoredPreviewVisibility,
             initialShowsHiddenFiles: settings.showsHiddenFiles,
             sidebarWidth: settings.sidebarWidth,
+            homePageModel: makeHomePageModel(),
             operationQueue: operationQueue,
             clipboard: clipboard
         )
@@ -112,6 +113,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         session.onRemoveFavorite = { [weak self] url in self?.removeFavorite(url) }
         session.onAddFavorite = { [weak self] url in self?.addFavorite(url) }
         session.canAddFavorite = { [weak self] url in self?.canAddFavorite(url) ?? false }
+        session.onHomePageRefresh = { [weak self] in self?.reloadVolumes() }
         tabViewController.addTabViewItem(item)
         tabViewController.selectedTabViewItemIndex = tabViewController.tabViewItems.count - 1
         sessions.append(session)
@@ -130,6 +132,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func setViewMode(_ mode: BrowserViewMode) { currentSession?.setViewMode(mode) }
+    var canChangeViewMode: Bool { currentSession?.canChangeViewMode ?? false }
     func togglePreview() { currentSession?.togglePreview() }
     func setShowsHiddenFiles(_ isVisible: Bool) {
         settings.showsHiddenFiles = isVisible
@@ -209,7 +212,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var standardSidebarLocations: [BrowserSidebarLocation] {
-        var locations = [BrowserSidebarLocation(title: "Home", url: homeURL, kind: .favorite)]
+        var locations = [
+            BrowserSidebarLocation(
+                title: BrowserComputerLocation.title,
+                url: BrowserComputerLocation.url,
+                kind: .computer
+            ),
+            BrowserSidebarLocation(title: "Home", url: homeURL, kind: .favorite),
+        ]
         for name in ["Desktop", "Documents", "Downloads"] {
             let url = homeURL.appendingPathComponent(name, isDirectory: true)
             if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
@@ -230,6 +240,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
             guard seen.insert(url).inserted else { return nil }
             let title = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
             return BrowserSidebarLocation(title: title, url: url, kind: .favorite, isRemovable: true)
+        }
+    }
+
+    private var mountedVolumeLocations: [BrowserSidebarLocation] {
+        mountedVolumes.compactMap { volume in
+            guard volume.url.standardizedFileURL != homeURL else { return nil }
+            return BrowserSidebarLocation(title: volume.displayName, url: volume.url, kind: .volume)
         }
     }
 
@@ -256,6 +273,27 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
+    private func makeHomePageModel() -> BrowserHomePageModel {
+        let favorites = (standardSidebarLocations + customSidebarLocations)
+            .filter { $0.kind == .favorite }
+            .map { location in
+                BrowserHomePageItem(title: location.title, url: location.url, subtitle: location.url.path)
+            }
+        let volumes = mountedVolumes.compactMap { volume -> BrowserHomePageVolume? in
+            guard volume.url.standardizedFileURL != homeURL else { return nil }
+            return BrowserHomePageVolume(
+                title: volume.displayName,
+                url: volume.url,
+                availableCapacity: volume.availableCapacity,
+                totalCapacity: volume.totalCapacity
+            )
+        }
+        let network = networkSidebarLocations.map { location in
+            BrowserHomePageItem(title: location.title, url: location.url, subtitle: location.url.path)
+        }
+        return BrowserHomePageModel(favorites: favorites, volumes: volumes, network: network)
+    }
+
     private func addFavorite(_ url: URL) {
         let url = url.standardizedFileURL
         guard canAddFavorite(url) else { return }
@@ -266,6 +304,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     private func canAddFavorite(_ url: URL) -> Bool {
         let url = url.standardizedFileURL
+        if BrowserComputerLocation.matches(url) { return false }
         return !allSidebarLocations.contains(where: { $0.url == url })
     }
 
@@ -277,20 +316,18 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshSidebarLocations() {
         let locations = allSidebarLocations
-        sessions.forEach { $0.updateSidebarLocations(locations) }
+        let homePage = makeHomePageModel()
+        sessions.forEach {
+            $0.updateSidebarLocations(locations)
+            $0.updateHomePage(homePage)
+        }
     }
 
     private func restoreSessionIfNeeded() {
         guard !didRestoreSession else { return }
         didRestoreSession = true
         isRestoringSession = true
-        let restored = settings.restoredTabSession()
-        if restored.tabs.isEmpty {
-            newTab(at: homeURL)
-        } else {
-            restored.tabs.forEach { newTab(restoring: $0) }
-            tabViewController.selectedTabViewItemIndex = min(max(0, restored.selectedIndex), sessions.count - 1)
-        }
+        newTab(at: BrowserComputerLocation.url)
         isRestoringSession = false
         persistSessionState()
     }
@@ -490,18 +527,18 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private func startVolumeLoading() {
         guard !didStartVolumeLoading else { return }
         didStartVolumeLoading = true
+        reloadVolumes()
+    }
+
+    private func reloadVolumes() {
+        volumeLoadTask?.cancel()
         let service = mountedVolumeService
         volumeLoadTask = Task { [weak self] in
             do {
                 let volumes = try await service.mountedVolumes()
                 guard !Task.isCancelled, let self else { return }
-                let homeURL = self.homeURL
-                self.mountedVolumeLocations = volumes.compactMap { volume in
-                    guard volume.url.standardizedFileURL != homeURL else { return nil }
-                    return BrowserSidebarLocation(title: volume.displayName, url: volume.url, kind: .volume)
-                }
-                let locations = self.allSidebarLocations
-                self.sessions.forEach { $0.updateSidebarLocations(locations) }
+                self.mountedVolumes = volumes
+                self.refreshSidebarLocations()
             } catch is CancellationError {
             } catch {
                 // Mounted volumes are supplemental navigation locations.

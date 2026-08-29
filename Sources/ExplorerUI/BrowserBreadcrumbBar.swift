@@ -93,9 +93,13 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     }
 
     func display(_ url: URL) {
-        displayedURL = url.standardizedFileURL
-        pathField.stringValue = displayedURL.path
+        displayedURL = BrowserComputerLocation.matches(url) ? BrowserComputerLocation.url : url.standardizedFileURL
+        pathField.stringValue = pathFieldText
         rebuildComponents()
+    }
+
+    private var pathFieldText: String {
+        BrowserComputerLocation.matches(displayedURL) ? "" : displayedURL.path
     }
 
     func focusAddressField() {
@@ -110,6 +114,16 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
             $0.removeFromSuperview()
         }
 
+        if BrowserComputerLocation.matches(displayedURL) {
+            componentStack.addArrangedSubview(
+                makeComponentButton(title: BrowserComputerLocation.title, url: displayedURL)
+            )
+            componentStack.layoutSubtreeIfNeeded()
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            return
+        }
+
         let components = displayedURL.pathComponents
         var cursor = URL(fileURLWithPath: "/", isDirectory: true)
         for (index, component) in components.enumerated() {
@@ -117,7 +131,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
                 cursor.appendPathComponent(component, isDirectory: true)
                 componentStack.addArrangedSubview(makeSeparator())
             }
-            let title = component == "/" ? "Computer" : component
+            let title = component == "/" ? FileManager.default.displayName(atPath: "/") : component
             componentStack.addArrangedSubview(makeComponentButton(title: title, url: cursor))
         }
         componentStack.layoutSubtreeIfNeeded()
@@ -154,7 +168,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     }
 
     @objc private func beginEditingPath(_ sender: Any?) {
-        pathField.stringValue = displayedURL.path
+        pathField.stringValue = pathFieldText
         pathField.isHidden = false
         scrollView.isHidden = true
         window?.makeFirstResponder(pathField)
@@ -165,7 +179,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     private func endEditingPath() {
         guard !pathField.isHidden else { return }
         removeOutsideClickMonitor()
-        pathField.stringValue = displayedURL.path
+        pathField.stringValue = pathFieldText
         pathField.isHidden = true
         scrollView.isHidden = false
         if let window, window.firstResponder === pathField || window.firstResponder === pathField.currentEditor() {

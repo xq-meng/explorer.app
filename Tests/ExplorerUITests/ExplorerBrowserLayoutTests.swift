@@ -75,6 +75,36 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         ])
     }
 
+    func testSidebarPlacesMyComputerFirstInFavorites() {
+        let controller = BrowserSidebarController()
+        let home = URL(fileURLWithPath: "/tmp/sidebar-home", isDirectory: true)
+        controller.displayRoots([
+            BrowserSidebarLocation(
+                title: BrowserComputerLocation.title,
+                url: BrowserComputerLocation.url,
+                kind: .computer
+            ),
+            BrowserSidebarLocation(title: "Home", url: home, kind: .favorite),
+        ])
+
+        XCTAssertEqual(controller.outlineView.numberOfRows, 3)
+        let computer = controller.outlineView.item(atRow: 1)
+        XCTAssertNotNil(computer)
+        XCTAssertFalse(
+            controller.outlineView(controller.outlineView, isItemExpandable: computer!)
+        )
+        let titles = (0..<3).compactMap { row -> String? in
+            guard let item = controller.outlineView.item(atRow: row) else { return nil }
+            let cell = controller.outlineView(
+                controller.outlineView,
+                viewFor: controller.outlineView.tableColumns[0],
+                item: item
+            ) as? NSTableCellView
+            return cell?.textField?.stringValue
+        }
+        XCTAssertEqual(titles, ["Favorites", "My Computer", "Home"])
+    }
+
     func testRightPaneNavigationDoesNotChangeSidebarSelection() {
         let controller = ExplorerBrowserViewController()
         controller.loadView()
@@ -466,6 +496,140 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertFalse(bar.isEditingPath)
     }
 
+    func testBreadcrumbBarShowsMyComputerForTheHomePage() {
+        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
+        bar.display(BrowserComputerLocation.url)
+        let titles = allDescendants(of: bar, as: NSButton.self).map(\.title)
+        XCTAssertEqual(titles.filter { $0 == BrowserComputerLocation.title }, [BrowserComputerLocation.title])
+        XCTAssertFalse(titles.contains("/"))
+    }
+
+    func testHomePageShowsFavoritesAndVolumeCapacity() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1_080, height: 680)
+        let documents = URL(fileURLWithPath: "/tmp/Documents", isDirectory: true)
+        let downloads = URL(fileURLWithPath: "/tmp/Downloads", isDirectory: true)
+        let desktop = URL(fileURLWithPath: "/tmp/Desktop", isDirectory: true)
+        let volume = URL(fileURLWithPath: "/", isDirectory: true)
+        let iCloud = URL(
+            fileURLWithPath: "/tmp/Library/Mobile Documents/com~apple~CloudDocs",
+            isDirectory: true
+        )
+        controller.displayHomePage(
+            BrowserHomePageModel(
+                favorites: [
+                    BrowserHomePageItem(title: "Documents", url: documents, subtitle: documents.path),
+                    BrowserHomePageItem(title: "Downloads", url: downloads, subtitle: downloads.path),
+                    BrowserHomePageItem(title: "Desktop", url: desktop, subtitle: desktop.path),
+                ],
+                volumes: [
+                    BrowserHomePageVolume(
+                        title: "Macintosh HD",
+                        url: volume,
+                        availableCapacity: 128_000_000_000,
+                        totalCapacity: 512_000_000_000
+                    ),
+                ],
+                network: [
+                    BrowserHomePageItem(title: "iCloud Drive", url: iCloud, subtitle: iCloud.path),
+                ]
+            )
+        )
+        controller.view.layoutSubtreeIfNeeded()
+
+        let labels = allDescendants(of: controller.view, as: NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(labels.contains("My Computer"))
+        XCTAssertTrue(labels.contains("Documents"))
+        XCTAssertTrue(labels.contains("Downloads"))
+        XCTAssertTrue(labels.contains("Desktop"))
+        XCTAssertTrue(labels.contains("Macintosh HD"))
+        XCTAssertTrue(labels.contains("iCloud Drive"))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("Favorites (") }))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("Devices and Drives (") }))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("Network Locations (") }))
+        XCTAssertTrue(labels.contains(where: { $0.contains("free of") }))
+
+        let home = allDescendants(of: controller.view, as: NSView.self)
+            .first { $0.identifier?.rawValue == "home.page" }
+        XCTAssertEqual(home?.isHidden, false)
+        XCTAssertFalse(
+            allDescendants(of: controller.view, as: NSView.self)
+                .filter { $0.identifier?.rawValue == "home.item" }
+                .isEmpty
+        )
+        let viewModeControl = allDescendants(of: controller.view, as: NSSegmentedControl.self)
+            .first { $0.identifier?.rawValue == "browser.viewMode" }
+        XCTAssertEqual(viewModeControl?.isHidden, true)
+
+        let favoriteTiles = allDescendants(of: controller.view, as: BrowserHomeItemView.self)
+            .filter { $0.identifier?.rawValue == "home.item" }
+        XCTAssertGreaterThanOrEqual(favoriteTiles.count, 3)
+
+        let first = favoriteTiles[0]
+        let second = favoriteTiles[1]
+        let third = favoriteTiles[2]
+        XCTAssertGreaterThan(second.frame.minX, first.frame.maxX - 1)
+        XCTAssertGreaterThan(third.frame.minX, second.frame.maxX - 1)
+        XCTAssertGreaterThan(first.frame.width, 40)
+        XCTAssertGreaterThan(second.frame.width, 40)
+
+        if let home {
+            for tile in [first, second, third] {
+                let point = tile.convert(NSPoint(x: tile.bounds.midX, y: tile.bounds.midY), to: home)
+                XCTAssertIdentical(home.hitTest(point), tile, "Tile \(tile.accessibilityLabel() ?? "") should receive clicks")
+            }
+        }
+
+        var opened: URL?
+        controller.onHomePageOpen = { opened = $0 }
+        second.mouseDown(with: mouseDownEvent(clickCount: 1))
+        XCTAssertNil(opened)
+        XCTAssertTrue(second.isSelected)
+        XCTAssertFalse(first.isSelected)
+        second.mouseDown(with: mouseDownEvent(clickCount: 2))
+        let openedAfterDoubleClick = expectation(description: "double-click opens")
+        DispatchQueue.main.async { openedAfterDoubleClick.fulfill() }
+        wait(for: [openedAfterDoubleClick], timeout: 1)
+        XCTAssertEqual(opened, downloads.standardizedFileURL)
+        opened = nil
+        third.performOpen()
+        XCTAssertEqual(opened, desktop.standardizedFileURL)
+        first.performOpen()
+        XCTAssertEqual(opened, documents.standardizedFileURL)
+
+        controller.displayRows([
+            BrowserFileRow(
+                url: documents.appendingPathComponent("notes.txt"),
+                name: "notes.txt",
+                modifiedDate: "Today",
+                size: "1 KB",
+                kind: "Text",
+                isNavigable: false
+            )
+        ])
+        XCTAssertEqual(viewModeControl?.isHidden, false)
+    }
+
+    func testVolumeCapacityCaptionUsesFreeSpaceAndUsedFraction() {
+        XCTAssertEqual(
+            BrowserVolumeCapacity.usedFraction(available: 25, total: 100) ?? -1,
+            0.75,
+            accuracy: 0.0001
+        )
+        XCTAssertNil(BrowserVolumeCapacity.usedFraction(available: 10, total: 0))
+        let caption = BrowserVolumeCapacity.caption(
+            available: 128_000_000_000,
+            total: 512_000_000_000
+        )
+        XCTAssertEqual(
+            caption,
+            "\(ByteCountFormatter.string(fromByteCount: 128_000_000_000, countStyle: .file)) free of \(ByteCountFormatter.string(fromByteCount: 512_000_000_000, countStyle: .file))"
+        )
+        XCTAssertTrue(BrowserComputerLocation.matches(BrowserComputerLocation.url))
+        XCTAssertFalse(BrowserComputerLocation.matches(URL(fileURLWithPath: "/")))
+    }
+
     func testConflictAlertHidesApplyToAllForTheLastItem() {
         let prompt = BrowserConflictPrompt(
             sourceName: "report.txt",
@@ -569,6 +733,21 @@ private final class BrowserDropPasteboardReaderStub: BrowserDropPasteboardReadin
         didReadPromisedFileReceivers = true
         return []
     }
+}
+
+@MainActor
+private func mouseDownEvent(clickCount: Int) -> NSEvent {
+    NSEvent.mouseEvent(
+        with: .leftMouseDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: clickCount,
+        pressure: 1
+    )!
 }
 
 @MainActor
