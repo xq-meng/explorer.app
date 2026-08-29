@@ -263,14 +263,9 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
             ?? makeCell(identifier: identifier)
         cell.textField?.stringValue = node.location.title
         cell.textField?.toolTip = node.location.url.path
-        let symbol: String
-        switch node.location.kind {
-        case .favorite: symbol = "star.fill"
-        case .volume: symbol = "externaldrive.fill"
-        case .folder: symbol = "folder"
-        }
-        cell.imageView?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: node.location.title)
-        cell.imageView?.contentTintColor = .secondaryLabelColor
+        let icon = sidebarIcon(for: node.location)
+        cell.imageView?.image = icon.image
+        cell.imageView?.contentTintColor = icon.isTemplate ? .secondaryLabelColor : nil
         return cell
     }
 
@@ -280,6 +275,32 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
         item is SidebarNode
+    }
+
+    private func sidebarIcon(for location: BrowserSidebarLocation) -> (image: NSImage?, isTemplate: Bool) {
+        switch location.kind {
+        case .volume:
+            return (
+                NSImage(systemSymbolName: "externaldrive.fill", accessibilityDescription: location.title),
+                true
+            )
+        case .folder:
+            return (
+                NSImage(systemSymbolName: "folder", accessibilityDescription: location.title),
+                true
+            )
+        case .favorite:
+            if !location.isRemovable {
+                let image = NSWorkspace.shared.icon(forFile: location.url.path)
+                image.size = NSSize(width: 16, height: 16)
+                image.isTemplate = false
+                return (image, false)
+            }
+            return (
+                NSImage(systemSymbolName: "folder", accessibilityDescription: location.title),
+                true
+            )
+        }
     }
 
     private func makeGroupCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
