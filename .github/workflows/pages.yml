@@ -36,8 +36,8 @@ jobs:
           test -f site/site.js
           test -f site/404.html
           test -f site/.nojekyll
-          test -f site/assets/screenshot_light.jpg
-          test -f site/assets/screenshot_dark.jpg
+          test -f site/assets/screenshot_light.webp
+          test -f site/assets/screenshot_dark.webp
           test -f site/assets/icon-256.png
 
   deploy:
