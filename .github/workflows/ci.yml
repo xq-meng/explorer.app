@@ -13,15 +13,28 @@ concurrency:
 
 jobs:
   build-and-test:
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Show toolchain
-        run: swift --version
+      - name: Validate toolchain
+        run: |
+          set -euo pipefail
+
+          xcodebuild -version
+          swift --version
+          SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+          echo "macOS SDK $SDK_VERSION"
+
+          if [[ "$SDK_VERSION" != "26.4" ]]; then
+            echo "::error::Expected macOS SDK 26.4, but found $SDK_VERSION."
+            exit 1
+          fi
 
       - name: Build
         run: swift build
