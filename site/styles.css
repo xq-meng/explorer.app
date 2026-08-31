@@ -212,6 +212,7 @@ html[lang="zh"] .hero h1 {
   max-width: min(20em, 100%);
   word-break: keep-all;
   line-break: strict;
+  letter-spacing: 0;
 }
 
 .lede {
