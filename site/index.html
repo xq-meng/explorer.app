@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Explorer.app — a native macOS file manager</title>
+    <meta name="description" content="A native macOS file manager with Windows Explorer-style navigation: tabs, a location sidebar, a path bar, and a details list, plus Quick Look, Trash, and Command shortcuts.">
+    <meta name="theme-color" content="#f3f1ec">
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("explorer-lang");
+          var lang = stored || ((navigator.language || "en").toLowerCase().indexOf("zh") === 0 ? "zh" : "en");
+          document.documentElement.lang = lang === "zh" ? "zh" : "en";
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="styles.css">
+    <meta property="og:title" content="Explorer.app">
+    <meta property="og:description" content="A native macOS file manager with Windows Explorer-style navigation.">
+    <meta property="og:image" content="https://xq-meng.github.io/explorer.app/assets/og.png">
+    <meta property="og:url" content="https://xq-meng.github.io/explorer.app/">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Explorer.app",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "macOS 14",
+        "url": "https://xq-meng.github.io/explorer.app/",
+        "downloadUrl": "https://github.com/xq-meng/explorer.app/releases",
+        "softwareVersion": "0.7.0",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main"><span data-lang="en">Skip to content</span><span data-lang="zh">跳到正文</span></a>
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="./">
+          <img src="assets/icon-64.png" width="32" height="32" alt="">
+          Explorer.app
+        </a>
+        <nav class="nav-links" aria-label="Primary">
+          <a href="#features"><span data-lang="en">Features</span><span data-lang="zh">功能</span></a>
+          <a href="#install"><span data-lang="en">Install</span><span data-lang="zh">安装</span></a>
+          <a href="#shortcuts"><span data-lang="en">Shortcuts</span><span data-lang="zh">快捷键</span></a>
+          <a href="https://github.com/xq-meng/explorer.app">GitHub</a>
+          <div class="lang-switch" role="group" aria-label="Language">
+            <button type="button" data-lang-button="en">EN</button>
+            <button type="button" data-lang-button="zh">中文</button>
+          </div>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero wrap">
+        <p class="eyebrow">
+          <span class="dot" aria-hidden="true"></span>
+          <span data-lang="en">Preview 0.7.0 · Apple Silicon</span>
+          <span data-lang="zh">预览版 0.7.0 · Apple Silicon</span>
+        </p>
+        <img class="hero-icon" src="assets/icon-256.png" width="96" height="96" alt="Explorer.app icon">
+        <h1>
+          <span data-lang="en">Windows Explorer navigation. macOS conventions.</span>
+          <span data-lang="zh">Windows 资源管理器式导航，<br>遵循 macOS 使用习惯。</span>
+        </h1>
+        <p class="lede">
+          <span data-lang="en">Explorer.app is a native AppKit file manager with tabs, a location sidebar, a path bar, and a details list. It keeps macOS behavior you already know: Quick Look, Trash, Command shortcuts, and coordinated file operations.</span>
+          <span data-lang="zh">Explorer.app 是一款原生 AppKit 文件管理器，提供标签页、位置侧边栏、路径栏和详细信息列表。它同时保留 macOS 的使用习惯：Quick Look、废纸篓、Command 快捷键，以及经过协调的文件操作。</span>
+        </p>
+        <div class="actions">
+          <a class="button primary" href="#install"><span data-lang="en">Install the preview</span><span data-lang="zh">安装预览版</span></a>
+          <a class="button secondary" href="https://github.com/xq-meng/explorer.app">GitHub</a>
+        </div>
+        <p class="req">
+          <span data-lang="en">Requires macOS 14 or later. Current builds are unsigned preview releases.</span>
+          <span data-lang="zh">需要 macOS 14 或更高版本。当前构建为未签名的预览版。</span>
+        </p>
+
+        <div class="shot-panel">
+          <div class="shot-toolbar">
+            <div class="segmented" role="group" aria-label="Screenshot appearance">
+              <button type="button" data-shot-button="light">
+                <span data-lang="en">Light</span><span data-lang="zh">浅色</span>
+              </button>
+              <button type="button" data-shot-button="dark">
+                <span data-lang="en">Dark</span><span data-lang="zh">深色</span>
+              </button>
+            </div>
+          </div>
+          <figure class="shot-frame">
+            <img data-shot="light" src="assets/screenshot_light.jpg" width="1478" height="926" alt="Explorer My Computer home page in light appearance">
+            <img class="is-hidden" data-shot="dark" src="assets/screenshot_dark.jpg" width="1478" height="926" alt="Explorer My Computer home page in dark appearance">
+          </figure>
+        </div>
+      </section>
+
+      <section class="section wrap" id="features">
+        <h2>
+          <span data-lang="en">Built for getting around a Mac quickly</span>
+          <span data-lang="zh">为在 Mac 上高效浏览而设计</span>
+        </h2>
+        <p class="section-intro">
+          <span data-lang="en">The product goal is Explorer-style efficiency, not a Windows skin: location shortcuts, an address bar, a details list, tabs, keyboard control, an operation queue, and conflict handling.</span>
+          <span data-lang="zh">产品目标是复用资源管理器的高效率工作方式，而不是套一层 Windows 外观：位置快捷方式、地址栏、详细信息列表、标签页、键盘操作、文件操作队列和冲突处理。</span>
+        </p>
+        <div class="grid">
+          <article class="card">
+            <div class="icon-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg>
+            </div>
+            <h3><span data-lang="en">Windows and tabs</span><span data-lang="zh">多窗口与标签页</span></h3>
+            <p data-lang="en">Open multiple windows and native window tabs. Each tab keeps its own path, history, and selection.</p>
+            <p data-lang="zh">支持多窗口和 AppKit 原生窗口标签。每个标签页都有独立的路径、历史记录和选择状态。</p>
+          </article>
+          <article class="card">
+            <div class="icon-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h10M4 18h14"/></svg>
+            </div>
+            <h3><span data-lang="en">Details and icons</span><span data-lang="zh">详细信息与图标视图</span></h3>
+            <p data-lang="en">Switch between a sortable details list and an icon view. Hidden files, column sorting, and a preview pane are one shortcut away.</p>
+            <p data-lang="zh">可在可排序的详细信息列表和图标视图之间切换。隐藏文件、列排序和预览窗格都有对应快捷键。</p>
+          </article>
+          <article class="card">
+            <div class="icon-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h6l2 2h8v12H4V5z"/></svg>
+            </div>
+            <h3><span data-lang="en">Places, not a tree</span><span data-lang="zh">位置快捷方式</span></h3>
+            <p data-lang="en">The sidebar lists Favorites, mounted volumes, and Network locations such as iCloud Drive. Jump with one click, or type a path with Command-L.</p>
+            <p data-lang="zh">侧边栏列出收藏夹、已挂载卷和 iCloud Drive 等网络位置。单击即可跳转，也可以用 Command-L 输入路径。</p>
+          </article>
+          <article class="card">
+            <div class="icon-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="6"/><path d="M20 20l-3.5-3.5"/></svg>
+            </div>
+            <h3><span data-lang="en">Search and Quick Look</span><span data-lang="zh">搜索与 Quick Look</span></h3>
+            <p data-lang="en">Search the current folder tree with Spotlight, press Space for Quick Look, and keep an optional preview pane open while you browse.</p>
+            <p data-lang="zh">用 Spotlight 搜索当前文件夹树，按空格即可 Quick Look，也可以在浏览时打开可选的右侧预览窗格。</p>
+          </article>
+          <article class="card">
+            <div class="icon-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 7h12v10H8z"/><path d="M4 7v10"/><path d="M14 3v4M14 17v4"/></svg>
+            </div>
+            <h3><span data-lang="en">Safe file operations</span><span data-lang="zh">安全的文件操作</span></h3>
+            <p data-lang="en">Copy, cut, paste, rename, duplicate, Trash, and Shift-Delete run through a queued engine. Conflicts can replace, keep both, skip, stop, or apply to all.</p>
+            <p data-lang="zh">复制、剪切、粘贴、重命名、重复、移入废纸篓和 Shift-Delete 都走操作队列。冲突时可替换、保留两者、跳过、停止或应用到全部。</p>
+          </article>
+          <article class="card">
+            <div class="icon-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z"/></svg>
+            </div>
+            <h3><span data-lang="en">macOS-aware safety</span><span data-lang="zh">符合 macOS 的安全模型</span></h3>
+            <p data-lang="en">Mutations use NSFileCoordinator. Replacements keep a write-ahead journal so an interrupted overwrite can restore or finish on the next launch. Undo and redo cover completed operations.</p>
+            <p data-lang="zh">文件变更使用 NSFileCoordinator。替换操作会写前日志，中断后可在下次启动时恢复或完成清理。已完成的操作支持撤销和重做。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section wrap" id="install">
+        <h2>
+          <span data-lang="en">Install the preview</span>
+          <span data-lang="zh">安装预览版</span>
+        </h2>
+        <p class="section-intro">
+          <span data-lang="en">The prebuilt zip and Homebrew cask are Apple Silicon only. Intel Macs can build from source. Preview builds are ad-hoc signed and not notarized, so Gatekeeper quarantines the download.</span>
+          <span data-lang="zh">预编译 zip 和 Homebrew Cask 仅支持 Apple Silicon。Intel Mac 需要从源码构建。预览版使用 ad-hoc 签名且未经公证，因此 Gatekeeper 会隔离下载的应用。</span>
+        </p>
+        <div class="install-grid">
+          <div class="terminal">
+            <header>
+              <span>Homebrew</span>
+              <button
+                class="copy"
+                type="button"
+                data-copy="brew tap xq-meng/tap
+brew install --cask explorer-app
+xattr -dr com.apple.quarantine /Applications/Explorer.app"
+              >
+                <span data-lang="en">Copy</span><span data-lang="zh">复制</span>
+              </button>
+            </header>
+            <pre>brew tap xq-meng/tap
+brew install --cask explorer-app
+xattr -dr com.apple.quarantine /Applications/Explorer.app</pre>
+          </div>
+          <article class="card">
+            <h3><span data-lang="en">Or download a zip</span><span data-lang="zh">或下载 zip</span></h3>
+            <p data-lang="en">Get <code>Explorer-&lt;version&gt;-arm64.zip</code> from GitHub Releases, move Explorer.app into /Applications, then remove quarantine with the same xattr command.</p>
+            <p data-lang="zh">从 GitHub Releases 下载 <code>Explorer-&lt;version&gt;-arm64.zip</code>，将 Explorer.app 拖入 /Applications，再用同样的 xattr 命令移除隔离属性。</p>
+            <p style="margin-top:16px">
+              <a class="button secondary" href="https://github.com/xq-meng/explorer.app/releases">
+                <span data-lang="en">Open Releases</span><span data-lang="zh">打开 Releases</span>
+              </a>
+            </p>
+          </article>
+        </div>
+        <p class="section-intro" style="margin-top:24px;margin-bottom:0">
+          <span data-lang="en">If macOS still says the app is damaged, run xattr again, then open Explorer from Finder with Right-click → Open. Update with <code>brew upgrade --cask explorer-app</code>.</span>
+          <span data-lang="zh">如果 macOS 仍提示应用已损坏，请再运行一次 xattr，然后在 Finder 中右键点按 Explorer 并选择打开。更新使用 <code>brew upgrade --cask explorer-app</code>。</span>
+        </p>
+      </section>
+
+      <section class="section wrap" id="shortcuts">
+        <h2>
+          <span data-lang="en">Keyboard shortcuts</span>
+          <span data-lang="zh">键盘快捷键</span>
+        </h2>
+        <p class="section-intro">
+          <span data-lang="en">macOS Command shortcuts stay in place, with a few Explorer-style keys for path editing and deletion.</span>
+          <span data-lang="zh">保留 macOS 的 Command 快捷键，并补充路径编辑和删除等资源管理器风格按键。</span>
+        </p>
+        <table class="shortcuts">
+          <thead>
+            <tr>
+              <th><span data-lang="en">Shortcut</span><span data-lang="zh">快捷键</span></th>
+              <th><span data-lang="en">Action</span><span data-lang="zh">操作</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><kbd>Command-L</kbd></td>
+              <td><span data-lang="en">Edit the current path</span><span data-lang="zh">编辑当前路径</span></td>
+            </tr>
+            <tr>
+              <td><kbd>Command-T</kbd> / <kbd>Command-W</kbd></td>
+              <td><span data-lang="en">New tab / close tab</span><span data-lang="zh">新建标签页 / 关闭标签页</span></td>
+            </tr>
+            <tr>
+              <td><kbd>Command-1</kbd> / <kbd>Command-2</kbd></td>
+              <td><span data-lang="en">Details view / icon view</span><span data-lang="zh">详细信息视图 / 图标视图</span></td>
+            </tr>
+            <tr>
+              <td><kbd>Command-Shift-P</kbd></td>
+              <td><span data-lang="en">Toggle the preview pane</span><span data-lang="zh">显示或隐藏预览窗格</span></td>
+            </tr>
+            <tr>
+              <td><kbd>Space</kbd></td>
+              <td>Quick Look</td>
+            </tr>
+            <tr>
+              <td><kbd>Delete</kbd> / <kbd>Shift-Delete</kbd></td>
+              <td><span data-lang="en">Move to Trash / delete immediately</span><span data-lang="zh">移入废纸篓 / 立即删除</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="section wrap" id="preview">
+        <div class="callout">
+          <h2>
+            <span data-lang="en">This is a preview. Keep backups.</span>
+            <span data-lang="zh">这是预览版，请保留备份。</span>
+          </h2>
+          <p class="section-intro">
+            <span data-lang="en">Do not test destructive operations on the only copy of a file. Review known issues before using a preview build with important data.</span>
+            <span data-lang="zh">不要在文件的唯一副本上测试破坏性操作。在用预览版处理重要数据之前，请先阅读已知问题。</span>
+          </p>
+          <ul class="note-list">
+            <li data-lang="en">Prebuilt releases are Apple Silicon only and are not notarized.</li>
+            <li data-lang="zh">预编译版本仅支持 Apple Silicon，且未经公证。</li>
+            <li data-lang="en">Replacement operations journal recovery; an ordinary copy interrupted by a crash can still leave a partial destination.</li>
+            <li data-lang="zh">替换操作有恢复日志；普通复制若在崩溃时中断，仍可能留下不完整的目标文件。</li>
+            <li data-lang="en">The interface is currently English-only.</li>
+            <li data-lang="zh">当前界面仅为英文。</li>
+          </ul>
+          <p style="margin:16px 0 0">
+            <a href="https://github.com/xq-meng/explorer.app/blob/main/docs/known-issues.md">
+              <span data-lang="en">Read known issues</span><span data-lang="zh">查看已知问题</span>
+            </a>
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner wrap">
+        <p>Explorer.app</p>
+        <nav aria-label="Footer">
+          <a href="https://github.com/xq-meng/explorer.app">GitHub</a>
+          <a href="https://github.com/xq-meng/explorer.app/releases">Releases</a>
+          <a href="https://github.com/xq-meng/homebrew-tap">Homebrew tap</a>
+          <a href="https://github.com/xq-meng/explorer.app/blob/main/docs/architecture.md">
+            <span data-lang="en">Architecture</span><span data-lang="zh">架构</span>
+          </a>
+        </nav>
+      </div>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>

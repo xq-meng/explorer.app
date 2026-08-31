@@ -2,6 +2,8 @@
 
 A native macOS file manager that uses Windows Explorer-style navigation—tabs, a sidebar of folder shortcuts, a path bar, and a details list—while following macOS conventions such as Quick Look, Trash, and Command shortcuts.
 
+The product site is at [xq-meng.github.io/explorer.app](https://xq-meng.github.io/explorer.app/).
+
 The current builds are **preview releases**: unsigned, Apple Silicon only, and still changing. See [Releases](https://github.com/xq-meng/explorer.app/releases) for the latest version.
 
 Before using a preview build for important files, review the current [known issues](docs/known-issues.md). Keep a separate backup of data used to test destructive operations.
@@ -124,3 +126,7 @@ Contributor setup, tests, and local tooling are in [docs/development.md](docs/de
 - [Roadmap](docs/roadmap.md) — milestones and planned work
 - [Known issues](docs/known-issues.md) — current preview limitations and safety notes
 - [Regression checklist](docs/regression-checklist.md) — automated and manual release gates
+
+## Product website
+
+The public product page lives in [`site/`](site/) and is deployed by [`.github/workflows/pages.yml`](.github/workflows/pages.yml). After GitHub Pages is enabled with the **GitHub Actions** source, it is available at https://xq-meng.github.io/explorer.app/.
