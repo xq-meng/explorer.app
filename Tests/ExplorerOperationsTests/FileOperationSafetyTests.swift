@@ -112,14 +112,19 @@ final class FileOperationSafetyTests: XCTestCase {
         try Data("source".utf8).write(to: source)
         try Data("existing".utf8).write(to: existing)
         let client = FailSecondMoveClient()
+        let journal = FileOperationRecoveryJournal(
+            directory: root.appendingPathComponent("RecoveryJournal", isDirectory: true)
+        )
         do {
-            _ = try await FileOperationEngine(fileManager: client).execute(
+            _ = try await FileOperationEngine(fileManager: client, recoveryJournal: journal).execute(
                 .rename(source: source, name: "existing.txt", conflictPolicy: .replace)
             )
             XCTFail("Expected injected rename failure")
         } catch {
             XCTAssertEqual(try String(contentsOf: source), "source")
             XCTAssertEqual(try String(contentsOf: existing), "existing")
+            let pendingEntryCount = try await journal.pendingEntryCount()
+            XCTAssertEqual(pendingEntryCount, 0)
         }
     }
 

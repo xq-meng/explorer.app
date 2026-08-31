@@ -261,6 +261,8 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         operationCoordinator.handle(event)
     }
 
+    var hasPendingFileOperations: Bool { operationCoordinator.hasPendingOperations }
+
     func emit(_ event: ExplorerTabEvent) {
         onEvent?(event)
     }
@@ -459,27 +461,14 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         quickLookCoordinator.beginControl(panel, selection: selection)
     }
 
+    func endQuickLookControl(_ panel: QLPreviewPanel) {
+        quickLookCoordinator.endControl(panel)
+    }
+
     var canAcceptQuickLookControl: Bool { !selection.isEmpty }
 
     func toggleQuickLook() {
         quickLookCoordinator.toggle(selection: selection)
-    }
-}
-
-extension ExplorerTabController {
-    @objc nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
-        MainActor.assumeIsolated { canAcceptQuickLookControl }
-    }
-
-    @objc nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        MainActor.assumeIsolated {
-            beginQuickLookControl(panel)
-        }
-    }
-
-    @objc nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        // The shared panel may transfer to another tab through the responder
-        // chain; no filesystem state is retained by the preview controller.
     }
 }
 

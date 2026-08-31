@@ -33,6 +33,7 @@ Run this checklist for every preview release. Perform destructive checks only in
 - [ ] Opening one or more folders through Finder or Launch Services creates the expected tabs.
 - [ ] New windows and tabs have independent paths, histories, and selections.
 - [ ] Closing tabs, closing the final tab, and quitting the app do not crash.
+- [ ] Closing a tab/window or quitting during an operation defaults to keeping Explorer open; confirming cancellation waits for the queue to stop.
 
 ## Views and selection
 
@@ -55,10 +56,13 @@ Run this checklist for every preview release. Perform destructive checks only in
 
 ## File operations
 
+- [ ] Backspace navigates to the previous location without mutating the selection.
 - [ ] New Folder creates a folder and begins inline rename.
 - [ ] Rename, Copy, Cut, Paste, Duplicate, and internal drag and drop operate on the intended items and destination.
 - [ ] Same-name conflicts exercise Replace, Keep Both, Skip, Stop, and Apply to All.
 - [ ] A failed replacement restores the original destination.
+- [ ] Simulated `backupCreated` recovery restores the original destination, and simulated `replacementCompleted` recovery keeps the replacement and removes its backup.
+- [ ] Corrupt or unavailable recovery records are retained and reported instead of discarded.
 - [ ] A cross-volume move copies successfully before removing the source.
 - [ ] The operation footer shows queued/running progress and Cancel stops the selected operation safely.
 - [ ] After cancellation completes, closing the operation's window does not leave an active or hidden operation.
@@ -70,6 +74,7 @@ Run this checklist for every preview release. Perform destructive checks only in
 ## External integration
 
 - [ ] Creating, renaming, and deleting an item in Finder refreshes the current Explorer folder.
+- [ ] Concurrent Finder and Explorer mutations complete through file coordination or produce a clear error without silent overwrite.
 - [ ] Dragging file URLs to and from Finder works with expected copy/move behavior and Option-key override.
 - [ ] At least one file-promise source, such as Mail or Safari, can drop into a disposable directory.
 - [ ] Mounting and unmounting an external or network volume refreshes My Computer and the sidebar.

@@ -11,9 +11,10 @@ This document tracks user-visible limitations in the current Explorer.app previe
 ## File operations
 
 - The operation queue and Undo/Redo history are held in memory per window tab. Closing that tab or quitting Explorer discards its history.
-- Closing a tab or window, or quitting while an operation is running, is not yet guarded by a confirmation or recovery workflow. Cancel the operation and wait for it to stop before closing Explorer.
-- A crash or forced quit during a copy, move, or replacement can leave a partial destination or a hidden `.explorer-replace-*` recovery item beside the destination. Explorer does not yet scan for or recover these artifacts at launch.
-- File mutations do not yet use `NSFileCoordinator`. Concurrent changes from another Explorer window, Finder, document apps, iCloud, or other File Provider clients can race with an operation.
+- Closing a tab or window, or quitting while an operation is running, now requires either keeping Explorer open or cancelling and waiting for the operation to stop.
+- Replacement operations use a write-ahead recovery journal. On launch, Explorer restores the original destination when replacement did not finish, or removes the old backup when it did. Recovery records that cannot be processed are retained and reported.
+- A crash or forced quit during an ordinary, non-replacement copy or cross-volume move can still leave a partial destination. Full operation journaling is not yet implemented.
+- File mutations use `NSFileCoordinator`, but another client can still change or remove an item between separate operations in a batch. Explorer reports the resulting failure rather than silently overwriting.
 - Replacement operations and permanent deletion are intentionally not undoable. Shift-Delete permanently removes selected items after confirmation.
 - A batch can complete partially when a later item fails. The footer reports the result, but there is not yet a persistent operation-details view.
 

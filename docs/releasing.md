@@ -25,8 +25,8 @@ Add a repository Actions secret named `HOMEBREW_TAP_TOKEN`. Use a fine-grained p
 After the checks above and the version-bump commit, create and push the tag. For example:
 
 ```bash
-git tag -a v0.6.4 -m "Explorer 0.6.4"
-git push origin v0.6.4
+git tag -a v0.7.0 -m "Explorer 0.7.0"
+git push origin v0.7.0
 ```
 
-Replace `0.6.4` with the version written to the plist. After the workflow finishes, verify that the GitHub asset version and SHA-256 match the Homebrew Cask, then link the release notes to the current [known issues](known-issues.md).
+Replace `0.7.0` with the version written to the plist. After the workflow finishes, verify that the GitHub asset version and SHA-256 match the Homebrew Cask, then link the release notes to the current [known issues](known-issues.md).

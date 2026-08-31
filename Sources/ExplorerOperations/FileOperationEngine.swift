@@ -37,9 +37,16 @@ public extension FileManagerClient {
 /// Production implementation of ``FileManagerClient``.
 public struct LocalFileManagerClient: FileManagerClient, @unchecked Sendable {
     private let manager: FileManager
+    private let coordinator: any FileCoordinationClient
 
     public init(fileManager: FileManager = .default) {
         self.manager = fileManager
+        self.coordinator = SystemFileCoordinationClient()
+    }
+
+    init(fileManager: FileManager, coordinator: any FileCoordinationClient) {
+        self.manager = fileManager
+        self.coordinator = coordinator
     }
 
     public func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
@@ -48,22 +55,41 @@ public struct LocalFileManagerClient: FileManagerClient, @unchecked Sendable {
 
     public func createDirectory(at url: URL, withIntermediateDirectories createIntermediates: Bool,
                                 attributes: [FileAttributeKey: Any]? = nil) throws {
-        try manager.createDirectory(at: url, withIntermediateDirectories: createIntermediates,
-                                    attributes: attributes)
+        try coordinator.coordinateWriting(at: url, intent: .createOrModify) { coordinatedURL in
+            try manager.createDirectory(
+                at: coordinatedURL,
+                withIntermediateDirectories: createIntermediates,
+                attributes: attributes
+            )
+        }
     }
 
     public func copyItem(at srcURL: URL, to dstURL: URL) throws {
-        try manager.copyItem(at: srcURL, to: dstURL)
+        try coordinator.coordinateReading(
+            at: srcURL,
+            writingAt: dstURL,
+            destinationIntent: .createOrModify
+        ) { coordinatedSource, coordinatedDestination in
+            try manager.copyItem(at: coordinatedSource, to: coordinatedDestination)
+        }
     }
 
     public func moveItem(at srcURL: URL, to dstURL: URL) throws {
-        try manager.moveItem(at: srcURL, to: dstURL)
+        try coordinator.coordinateMoving(from: srcURL, to: dstURL) { coordinatedSource, coordinatedDestination in
+            try manager.moveItem(at: coordinatedSource, to: coordinatedDestination)
+        }
     }
 
-    public func removeItem(at URL: URL) throws { try manager.removeItem(at: URL) }
+    public func removeItem(at URL: URL) throws {
+        try coordinator.coordinateWriting(at: URL, intent: .delete) { coordinatedURL in
+            try manager.removeItem(at: coordinatedURL)
+        }
+    }
 
     public func trashItem(at url: URL, resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>? = nil) throws {
-        try manager.trashItem(at: url, resultingItemURL: resultingItemURL)
+        try coordinator.coordinateWriting(at: url, intent: .move) { coordinatedURL in
+            try manager.trashItem(at: coordinatedURL, resultingItemURL: resultingItemURL)
+        }
     }
 
     public func volumeIdentifier(for url: URL) throws -> String? {
@@ -80,7 +106,12 @@ public struct LocalFileManagerClient: FileManagerClient, @unchecked Sendable {
         to dstURL: URL,
         onBytesCopied: @escaping @Sendable (Int64) async -> Void
     ) async throws {
-        try await CopyfileOperation.copy(from: srcURL, to: dstURL, onBytesCopied: onBytesCopied)
+        try await CopyfileOperation.copy(
+            from: srcURL,
+            to: dstURL,
+            coordinator: coordinator,
+            onBytesCopied: onBytesCopied
+        )
     }
 
     public func byteCount(of url: URL) -> Int64 {
@@ -91,11 +122,16 @@ public struct LocalFileManagerClient: FileManagerClient, @unchecked Sendable {
 /// An actor that serializes mutations and checks cancellation between items.
 public actor FileOperationEngine {
     private let fileManager: any FileManagerClient
+    private let recoveryJournal: FileOperationRecoveryJournal
     private var isExecuting = false
     private var queuedExecutions: [CheckedContinuation<Void, Never>] = []
 
-    public init(fileManager: any FileManagerClient = LocalFileManagerClient()) {
+    public init(
+        fileManager: any FileManagerClient = LocalFileManagerClient(),
+        recoveryJournal: FileOperationRecoveryJournal = FileOperationRecoveryJournal()
+    ) {
         self.fileManager = fileManager
+        self.recoveryJournal = recoveryJournal
     }
 
     public func execute(_ operation: FileOperation,
@@ -579,25 +615,37 @@ public actor FileOperationEngine {
         }
         let backup = destination.deletingLastPathComponent()
             .appendingPathComponent(".explorer-replace-\(UUID().uuidString)")
-        try fileManager.moveItem(at: destination, to: backup)
+        let recoveryID = try await recoveryJournal.begin(destination: destination, backup: backup)
+        var replacementCompleted = false
         do {
+            try fileManager.moveItem(at: destination, to: backup)
+            try await recoveryJournal.markBackupCreated(recoveryID)
             try await operation()
+            try await recoveryJournal.markReplacementCompleted(recoveryID)
+            replacementCompleted = true
+            // Once this phase is journaled, recovery preserves the replacement
+            // and only finishes removal of the old backup.
+            try fileManager.removeItem(at: backup)
+            try await recoveryJournal.finish(recoveryID)
         } catch {
-            // Best effort cleanup of a partial result, followed by restoration
-            // of the old destination. Preserve the original operation error.
-            if fileManager.fileExists(atPath: destination.path, isDirectory: nil) {
-                try? fileManager.removeItem(at: destination)
-            }
-            if fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
-                try? fileManager.moveItem(at: backup, to: destination)
+            if !replacementCompleted {
+                // Best effort cleanup of a partial result, followed by
+                // restoration of the old destination. If either step fails,
+                // retain the journal so startup recovery can retry it.
+                if fileManager.fileExists(atPath: destination.path, isDirectory: nil) {
+                    try? fileManager.removeItem(at: destination)
+                }
+                if fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
+                    try? fileManager.moveItem(at: backup, to: destination)
+                }
+                if fileManager.fileExists(atPath: destination.path, isDirectory: nil),
+                   !fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
+                    try? await recoveryJournal.markRollbackCompleted(recoveryID)
+                    try? await recoveryJournal.finish(recoveryID)
+                }
             }
             throw error
         }
-        // If cleanup fails, retain the backup and report the failure.  The
-        // successful replacement and the old item are still both present,
-        // which is safer than deleting the replacement to restore an item
-        // whose operation already completed.
-        try fileManager.removeItem(at: backup)
     }
 
     private func copyReportingProgress(

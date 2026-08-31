@@ -2,21 +2,21 @@ import AppKit
 @preconcurrency import QuickLookUI
 
 /// Owns the shared Quick Look panel's data source and the current tab's preview
-/// selection while responder-chain control remains with the tab controller.
+/// selection while responder-chain control remains with the window controller.
 @MainActor
 final class ExplorerQuickLookCoordinator: NSObject {
     private weak var owner: NSResponder?
-    private var urls: [URL] = []
+    private let selection = QuickLookSelectionSnapshot()
 
     init(owner: NSResponder) {
         self.owner = owner
     }
 
     func updateSelection(_ selection: Set<URL>) {
-        urls = selection.sorted { $0.path < $1.path }
+        self.selection.replace(with: selection)
         guard QLPreviewPanel.sharedPreviewPanelExists(),
               let panel = QLPreviewPanel.shared(), owns(panel) else { return }
-        guard !urls.isEmpty else {
+        guard !self.selection.isEmpty else {
             panel.orderOut(nil)
             return
         }
@@ -30,7 +30,7 @@ final class ExplorerQuickLookCoordinator: NSObject {
     }
 
     func toggle(selection: Set<URL>) {
-        urls = selection.sorted { $0.path < $1.path }
+        self.selection.replace(with: selection)
         // Context (and menu-bar) tracking keeps the menu in the responder chain
         // until the current run loop finishes. Showing Quick Look immediately
         // makes `QLPreviewPanel` look at the menu instead of the tab.
@@ -40,8 +40,14 @@ final class ExplorerQuickLookCoordinator: NSObject {
     }
 
     func beginControl(_ panel: QLPreviewPanel, selection: Set<URL>) {
-        urls = selection.sorted { $0.path < $1.path }
+        self.selection.replace(with: selection)
         configure(panel)
+    }
+
+    func endControl(_ panel: QLPreviewPanel) {
+        guard owns(panel) else { return }
+        panel.dataSource = nil
+        panel.delegate = nil
     }
 
     private func togglePanel() {
@@ -50,7 +56,8 @@ final class ExplorerQuickLookCoordinator: NSObject {
             panel.orderOut(nil)
             return
         }
-        guard !urls.isEmpty else { return }
+        guard !selection.isEmpty else { return }
+        configure(panel)
         ownerWindow()?.makeKeyAndOrderFront(nil)
         panel.makeKeyAndOrderFront(nil)
     }
@@ -66,22 +73,46 @@ final class ExplorerQuickLookCoordinator: NSObject {
     }
 
     private func owns(_ panel: QLPreviewPanel) -> Bool {
-        guard let owner else { return false }
-        return panel.currentController as? NSResponder === owner
+        panel.dataSource === self
     }
 }
 
 extension ExplorerQuickLookCoordinator: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        MainActor.assumeIsolated { urls.count }
+        selection.count
     }
 
     nonisolated func previewPanel(
         _ panel: QLPreviewPanel!,
         previewItemAt index: Int
     ) -> (any QLPreviewItem)! {
-        MainActor.assumeIsolated {
-            urls.indices.contains(index) ? urls[index] as NSURL : nil
+        selection.url(at: index) as NSURL?
+    }
+}
+
+/// Quick Look is free to request data-source items outside the main actor.
+/// Keep the small URL snapshot synchronized instead of imposing a queue
+/// assumption on framework callbacks.
+final class QuickLookSelectionSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+
+    var count: Int {
+        lock.withLock { urls.count }
+    }
+
+    var isEmpty: Bool {
+        lock.withLock { urls.isEmpty }
+    }
+
+    func replace(with selection: Set<URL>) {
+        let sortedURLs = selection.sorted { $0.path < $1.path }
+        lock.withLock { urls = sortedURLs }
+    }
+
+    func url(at index: Int) -> URL? {
+        lock.withLock {
+            urls.indices.contains(index) ? urls[index] : nil
         }
     }
 }

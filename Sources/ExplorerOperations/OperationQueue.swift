@@ -63,6 +63,7 @@ public actor FileOperationQueue {
     private var runningTask: Task<Void, Never>?
     private var waiters: [UUID: [CheckedContinuation<FileOperationResult, Error>]] = [:]
     private var conflictResolvers: [UUID: any FileConflictResolving] = [:]
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(engine: FileOperationEngine = FileOperationEngine(), bufferSize: Int = 256) {
         let size = max(1, bufferSize)
@@ -96,6 +97,29 @@ public actor FileOperationQueue {
 
     public func snapshots() -> [FileOperationQueueSnapshot] {
         order.compactMap { jobs[$0] }
+    }
+
+    public func hasActiveOperations() -> Bool {
+        jobs.values.contains { $0.state == .queued || $0.state == .running }
+    }
+
+    /// Requests cancellation for every queued or running operation. Running
+    /// work remains active until the underlying file call observes
+    /// cancellation and unwinds.
+    public func cancelAll() {
+        let activeIDs = order.filter {
+            guard let state = jobs[$0]?.state else { return false }
+            return state == .queued || state == .running
+        }
+        for id in activeIDs { _ = cancel(id) }
+        resumeIdleWaitersIfNeeded()
+    }
+
+    public func waitUntilIdle() async {
+        guard hasActiveOperations() else { return }
+        await withCheckedContinuation { continuation in
+            idleWaiters.append(continuation)
+        }
     }
 
     /// Cancels a queued item immediately, or asks the running engine task to
@@ -208,6 +232,7 @@ public actor FileOperationQueue {
         runningID = nil
         runningTask = nil
         startNextIfNeeded()
+        resumeIdleWaitersIfNeeded()
     }
 
     private func finishWaiters(for id: UUID, with result: Result<FileOperationResult, Error>) {
@@ -216,4 +241,11 @@ public actor FileOperationQueue {
     }
 
     private func emit(_ event: FileOperationQueueEvent) { eventContinuation.yield(event) }
+
+    private func resumeIdleWaitersIfNeeded() {
+        guard !hasActiveOperations(), !idleWaiters.isEmpty else { return }
+        let continuations = idleWaiters
+        idleWaiters.removeAll()
+        continuations.forEach { $0.resume() }
+    }
 }

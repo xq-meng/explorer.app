@@ -52,13 +52,20 @@ enum CopyfileOperation {
     static func copy(
         from source: URL,
         to destination: URL,
+        coordinator: any FileCoordinationClient,
         onBytesCopied: @escaping @Sendable (Int64) async -> Void
     ) async throws {
         let stream = AsyncStream.makeStream(of: Int64.self, bufferingPolicy: .bufferingNewest(1))
         let copyTask = Task.detached(priority: .userInitiated) {
             do {
-                try performCopyfile(from: source, to: destination) { copied in
-                    stream.continuation.yield(copied)
+                try coordinator.coordinateReading(
+                    at: source,
+                    writingAt: destination,
+                    destinationIntent: .createOrModify
+                ) { coordinatedSource, coordinatedDestination in
+                    try performCopyfile(from: coordinatedSource, to: coordinatedDestination) { copied in
+                        stream.continuation.yield(copied)
+                    }
                 }
                 stream.continuation.finish()
             } catch {

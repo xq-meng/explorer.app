@@ -614,14 +614,30 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         )
     }
 
-    func testDeleteKeyMovesToTrashAndShiftDeleteDeletesPermanently() {
+    func testBackspaceNavigatesBackAndForwardDeleteRemovesItems() {
         XCTAssertEqual(
             BrowserFileKeyboard.command(
                 charactersIgnoringModifiers: "\u{7F}",
+                specialKey: .delete,
+                modifiers: []
+            ),
+            .navigation(.back)
+        )
+        XCTAssertEqual(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: "\u{8}",
                 specialKey: nil,
                 modifiers: []
             ),
-            .moveToTrash
+            .navigation(.back)
+        )
+        XCTAssertEqual(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: "\u{F728}",
+                specialKey: .deleteForward,
+                modifiers: []
+            ),
+            .file(.moveToTrash)
         )
         XCTAssertEqual(
             BrowserFileKeyboard.command(
@@ -629,15 +645,75 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
                 specialKey: .deleteForward,
                 modifiers: .shift
             ),
-            .deletePermanently
+            .file(.deletePermanently)
         )
         XCTAssertNil(
             BrowserFileKeyboard.command(
                 charactersIgnoringModifiers: "\u{7F}",
-                specialKey: nil,
+                specialKey: .delete,
+                modifiers: .shift
+            )
+        )
+        XCTAssertNil(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: "\u{F728}",
+                specialKey: .deleteForward,
                 modifiers: .command
             )
         )
+        XCTAssertEqual(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: " ",
+                specialKey: nil,
+                modifiers: []
+            ),
+            .file(.quickLook)
+        )
+        XCTAssertNil(
+            BrowserFileKeyboard.command(
+                charactersIgnoringModifiers: " ",
+                specialKey: nil,
+                modifiers: .shift
+            )
+        )
+
+        let table = BrowserFileTableView()
+        var tableCommand: BrowserKeyboardCommand?
+        table.onKeyboardCommand = { tableCommand = $0 }
+        if let backspaceEvent = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{8}",
+            charactersIgnoringModifiers: "\u{8}",
+            isARepeat: false,
+            keyCode: 51
+        ) {
+            table.keyDown(with: backspaceEvent)
+        }
+        XCTAssertEqual(tableCommand, .navigation(.back))
+
+        let collection = BrowserDropCollectionView()
+        var collectionCommand: BrowserKeyboardCommand?
+        collection.onKeyboardCommand = { collectionCommand = $0 }
+        if let deleteEvent = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .shift,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{F728}",
+            charactersIgnoringModifiers: "\u{F728}",
+            isARepeat: false,
+            keyCode: 117
+        ) {
+            collection.keyDown(with: deleteEvent)
+        }
+        XCTAssertEqual(collectionCommand, .file(.deletePermanently))
     }
 
     func testBreadcrumbBarLeavesPathEditingWhenEditingEnds() {

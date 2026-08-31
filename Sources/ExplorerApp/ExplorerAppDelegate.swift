@@ -1,4 +1,5 @@
 import AppKit
+import ExplorerOperations
 import ExplorerUI
 
 @MainActor
@@ -8,6 +9,8 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var preferencesWindowController: ExplorerPreferencesWindowController?
     private var didFinishLaunching = false
     private var pendingLaunchURLs: [URL] = []
+    private let recoveryJournal = FileOperationRecoveryJournal()
+    private var isReplyingToTermination = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = true
@@ -15,15 +18,20 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        didFinishLaunching = true
-        let urls = pendingLaunchURLs
-        pendingLaunchURLs.removeAll()
-        if !urls.isEmpty {
-            presentIncomingURLs(urls)
-        }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.windowControllers.isEmpty else { return }
-            self.openWindow()
+        Task { [weak self] in
+            guard let self else { return }
+            let recoveryReport = await recoveryJournal.recoverPendingTransactions()
+            didFinishLaunching = true
+            let urls = pendingLaunchURLs
+            pendingLaunchURLs.removeAll()
+            if !urls.isEmpty {
+                presentIncomingURLs(urls)
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.windowControllers.isEmpty { self.openWindow() }
+                self.presentRecoveryReportIfNeeded(recoveryReport)
+            }
         }
     }
 
@@ -37,6 +45,31 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let activeControllers = windowControllers.filter(\.hasActiveFileOperations)
+        guard !activeControllers.isEmpty else { return .terminateNow }
+        guard !isReplyingToTermination else { return .terminateLater }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "File operations are still running."
+        alert.informativeText = "Keep Explorer open, or cancel all file operations and wait for them to stop before quitting."
+        alert.addButton(withTitle: "Keep Working")
+        alert.addButton(withTitle: "Cancel Operations and Quit")
+        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+
+        isReplyingToTermination = true
+        let tasks = activeControllers.map { controller in
+            Task { await controller.cancelActiveFileOperationsAndWait() }
+        }
+        Task { [weak self] in
+            for task in tasks { await task.value }
+            self?.isReplyingToTermination = false
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     @objc func newWindow(_ sender: Any?) {
@@ -179,7 +212,10 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         initialState: ExplorerWindowState? = nil,
         tabbedWith parent: ExplorerWindowController? = nil
     ) -> ExplorerWindowController {
-        let controller = ExplorerWindowController(initialState: initialState)
+        let controller = ExplorerWindowController(
+            initialState: initialState,
+            recoveryJournal: recoveryJournal
+        )
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windowControllers.removeAll { $0 === controller }
@@ -223,9 +259,7 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         rename.target = self
         let duplicate = fileMenu.addItem(withTitle: "Duplicate", action: #selector(duplicate(_:)), keyEquivalent: "d")
         duplicate.target = self
-        let trash = fileMenu.addItem(withTitle: "Move to Trash", action: #selector(moveToTrash(_:)), keyEquivalent: "\u{8}")
-        trash.keyEquivalentModifierMask = .command
-        trash.target = self
+        fileMenu.addItem(withTitle: "Move to Trash", action: #selector(moveToTrash(_:)), keyEquivalent: "").target = self
         let deleteImmediately = fileMenu.addItem(
             withTitle: "Delete Immediately…",
             action: #selector(deletePermanently(_:)),
@@ -300,6 +334,36 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private func applyShowsPreview(_ isVisible: Bool) {
         settings.showsPreview = isVisible
         windowControllers.forEach { $0.setPreviewVisible(isVisible) }
+    }
+
+    private func presentRecoveryReportIfNeeded(_ report: FileOperationRecoveryReport) {
+        guard report.didFindPendingWork else { return }
+        let alert = NSAlert()
+        if report.failures.isEmpty {
+            alert.alertStyle = .informational
+            alert.messageText = "Interrupted file operations were recovered."
+        } else {
+            alert.alertStyle = .warning
+            alert.messageText = "Some interrupted file operations need attention."
+        }
+
+        var details: [String] = []
+        if !report.restoredDestinations.isEmpty {
+            details.append("Restored \(report.restoredDestinations.count) original item(s).")
+        }
+        if !report.finalizedDestinations.isEmpty {
+            details.append("Finished cleaning up \(report.finalizedDestinations.count) completed replacement(s).")
+        }
+        if !report.failures.isEmpty {
+            details.append("Could not recover \(report.failures.count) item(s). Recovery records were preserved for another attempt.")
+        }
+        alert.informativeText = details.joined(separator: "\n")
+        alert.addButton(withTitle: "OK")
+        if let window = currentWindowController?.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     private func addMenuItem(

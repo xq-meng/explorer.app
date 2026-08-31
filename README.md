@@ -22,6 +22,7 @@ Before using a preview build for important files, review the current [known issu
 - Copy, cut, paste, rename, duplicate, Trash, and Shift-Delete
 - Conflict handling: replace, keep both, skip, stop, or apply to all
 - Undo and redo for completed file operations
+- Coordinated file mutations and startup recovery for interrupted replacements
 - Cloud-only iCloud items show a cloud badge in the Name column
 
 ## Requirements
@@ -111,8 +112,9 @@ Contributor setup, tests, and local tooling are in [docs/development.md](docs/de
 | Command-Control-D | Add the current folder to Favorites |
 | Command-Z / Command-Shift-Z | Undo / redo a file operation |
 | Space | Quick Look |
-| Delete | Move to Trash |
-| Shift-Delete | Delete immediately |
+| Backspace | Back |
+| Delete (Fn-Delete on compact Mac keyboards) | Move to Trash |
+| Shift-Delete (Shift-Fn-Delete on compact Mac keyboards) | Delete immediately |
 
 ## Documentation
 

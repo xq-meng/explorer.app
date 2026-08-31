@@ -15,6 +15,9 @@ ExplorerApp         Lifecycle, dependency composition, tabs, and persisted state
 ## Safety principles
 
 - Never overwrite a destination silently.
+- Coordinate mutations with other macOS file clients through `NSFileCoordinator`.
+- Journal replacement phases before moving the existing destination, then
+  restore or finalize the transaction on the next launch after interruption.
 - Run Undo/Redo through the same conflict validation; replacement operations are intentionally not recorded as undoable.
 - Move across volumes by copying successfully before removing the source.
 - Send normal deletion to the Trash.

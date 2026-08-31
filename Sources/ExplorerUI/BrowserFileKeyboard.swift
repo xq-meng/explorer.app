@@ -1,7 +1,12 @@
 import AppKit
 
+enum BrowserKeyboardCommand: Equatable {
+    case navigation(BrowserNavigationCommand)
+    case file(BrowserFileCommand)
+}
+
 enum BrowserFileKeyboard {
-    static func command(from event: NSEvent) -> BrowserFileCommand? {
+    static func command(from event: NSEvent) -> BrowserKeyboardCommand? {
         command(
             charactersIgnoringModifiers: event.charactersIgnoringModifiers,
             specialKey: event.specialKey,
@@ -13,32 +18,52 @@ enum BrowserFileKeyboard {
         charactersIgnoringModifiers: String?,
         specialKey: NSEvent.SpecialKey?,
         modifiers: NSEvent.ModifierFlags
-    ) -> BrowserFileCommand? {
+    ) -> BrowserKeyboardCommand? {
         let modifiers = modifiers.intersection([.shift, .command, .option, .control])
-        guard isDeleteKey(charactersIgnoringModifiers: charactersIgnoringModifiers, specialKey: specialKey),
-              modifiers.isDisjoint(with: [.command, .option, .control]) else {
+        if charactersIgnoringModifiers == " ", modifiers.isEmpty {
+            return .file(.quickLook)
+        }
+
+        switch deleteKey(charactersIgnoringModifiers: charactersIgnoringModifiers, specialKey: specialKey) {
+        case .backward where modifiers.isEmpty:
+            return .navigation(.back)
+        case .forward where modifiers.isDisjoint(with: [.command, .option, .control]):
+            return .file(modifiers.contains(.shift) ? .deletePermanently : .moveToTrash)
+        default:
             return nil
         }
-        return modifiers.contains(.shift) ? .deletePermanently : .moveToTrash
     }
 
-    private static func isDeleteKey(
+    private static func deleteKey(
         charactersIgnoringModifiers: String?,
         specialKey: NSEvent.SpecialKey?
-    ) -> Bool {
-        if specialKey == .delete || specialKey == .deleteForward {
-            return true
+    ) -> DeleteKey? {
+        switch specialKey {
+        case .delete:
+            return .backward
+        case .deleteForward:
+            return .forward
+        default:
+            switch charactersIgnoringModifiers {
+            case "\u{8}", "\u{7F}": return .backward
+            case "\u{F728}": return .forward
+            default: return nil
+            }
         }
-        return charactersIgnoringModifiers == "\u{7F}" || charactersIgnoringModifiers == "\u{F728}"
+    }
+
+    private enum DeleteKey {
+        case backward
+        case forward
     }
 }
 
 final class BrowserFileTableView: NSTableView {
-    var onFileKeyCommand: ((BrowserFileCommand) -> Void)?
+    var onKeyboardCommand: ((BrowserKeyboardCommand) -> Void)?
 
     override func keyDown(with event: NSEvent) {
         if let command = BrowserFileKeyboard.command(from: event) {
-            onFileKeyCommand?(command)
+            onKeyboardCommand?(command)
             return
         }
         super.keyDown(with: event)

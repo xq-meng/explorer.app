@@ -3,7 +3,7 @@
 ## Requirements
 
 - macOS 14 or later
-- A recent Xcode release with Swift 6 support
+- Xcode 26.4.1 for parity with CI releases, or another recent Xcode with Swift 6 support
 
 Open `Package.swift` in Xcode, or work from Terminal with Swift Package Manager.
 
@@ -38,6 +38,7 @@ The master must remain full-canvas and opaque so current macOS versions do not a
 
 ## Continuous integration
 
-Pushes and pull requests run `.github/workflows/ci.yml`, which builds and tests on macOS.
+Pushes and pull requests run `.github/workflows/ci.yml`, which builds and tests
+on macOS 26 with Xcode 26.4.1 and the macOS 26.4 SDK.
 
 Preview releases are documented in [releasing.md](releasing.md). Product scope and milestones are in [roadmap.md](roadmap.md), and current limitations are tracked in [known-issues.md](known-issues.md).

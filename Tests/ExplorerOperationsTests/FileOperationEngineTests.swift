@@ -209,6 +209,32 @@ final class FileOperationEngineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Cancelled").path))
     }
 
+    func testQueueCancelAllWaitsForRunningOperationToStop() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("Out", isDirectory: true)
+        try Data("pending".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let queue = FileOperationQueue(
+            engine: FileOperationEngine(fileManager: CancellableCopyFileManager())
+        )
+        let id = await queue.submit(.copy(sources: [source], to: destination))
+
+        for _ in 0..<100 {
+            if await queue.snapshot(for: id)?.state == .running { break }
+            await Task.yield()
+        }
+        let wasActive = await queue.hasActiveOperations()
+        XCTAssertTrue(wasActive)
+
+        await queue.cancelAll()
+        await queue.waitUntilIdle()
+
+        let isActive = await queue.hasActiveOperations()
+        let finalSnapshot = await queue.snapshot(for: id)
+        XCTAssertFalse(isActive)
+        XCTAssertEqual(finalSnapshot?.state, .cancelled)
+    }
+
     func testQueuePublishesBoundedStateAndProgressEvents() async throws {
         let queue = FileOperationQueue(bufferSize: 4)
         var iterator = queue.events.makeAsyncIterator()
@@ -459,4 +485,55 @@ private final class ChunkedCopyFileManager: FileManagerClient, @unchecked Sendab
         try backing.trashItem(at: url, resultingItemURL: resultingItemURL)
     }
     func volumeIdentifier(for url: URL) throws -> String? { try backing.volumeIdentifier(for: url) }
+}
+
+private final class CancellableCopyFileManager: FileManagerClient, @unchecked Sendable {
+    private let backing = LocalFileManagerClient()
+
+    func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
+        backing.fileExists(atPath: path, isDirectory: isDirectory)
+    }
+
+    func createDirectory(
+        at url: URL,
+        withIntermediateDirectories createIntermediates: Bool,
+        attributes: [FileAttributeKey: Any]?
+    ) throws {
+        try backing.createDirectory(
+            at: url,
+            withIntermediateDirectories: createIntermediates,
+            attributes: attributes
+        )
+    }
+
+    func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        try backing.copyItem(at: srcURL, to: dstURL)
+    }
+
+    func copyItemWithProgress(
+        at srcURL: URL,
+        to dstURL: URL,
+        onBytesCopied: @escaping @Sendable (Int64) async -> Void
+    ) async throws {
+        try await Task.sleep(for: .seconds(30))
+    }
+
+    func moveItem(at srcURL: URL, to dstURL: URL) throws {
+        try backing.moveItem(at: srcURL, to: dstURL)
+    }
+
+    func removeItem(at URL: URL) throws {
+        try backing.removeItem(at: URL)
+    }
+
+    func trashItem(
+        at url: URL,
+        resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?
+    ) throws {
+        try backing.trashItem(at: url, resultingItemURL: resultingItemURL)
+    }
+
+    func volumeIdentifier(for url: URL) throws -> String? {
+        try backing.volumeIdentifier(for: url)
+    }
 }

@@ -11,10 +11,13 @@ final class ExplorerTabOperationCoordinator {
 
     private let queue: FileOperationQueue
     private var pendingIDs = Set<UUID>()
+    private var pendingSubmissionCount = 0
 
     init(queue: FileOperationQueue) {
         self.queue = queue
     }
+
+    var hasPendingOperations: Bool { pendingSubmissionCount > 0 }
 
     func handle(_ event: FileOperationQueueEvent) {
         switch event {
@@ -50,8 +53,12 @@ final class ExplorerTabOperationCoordinator {
             ? FileConflictCoordinator(window: window)
             : nil
         let queue = queue
+        pendingSubmissionCount += 1
         Task { [weak self] in
-            defer { finished?() }
+            defer {
+                self?.pendingSubmissionCount -= 1
+                finished?()
+            }
             let id = await queue.submit(operation, conflictResolver: resolver)
             guard let self else { return }
             self.pendingIDs.insert(id)

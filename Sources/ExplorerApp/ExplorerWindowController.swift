@@ -34,11 +34,19 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private var operationSnapshots: [UUID: FileOperationQueueSnapshot] = [:]
     private var operationProgress: [UUID: FileOperationProgress] = [:]
     private var operationOrder: [UUID] = []
+    private var isPresentingCloseConfirmation = false
+    private var allowsCloseWithActiveOperations = false
+    private var closeCancellationTask: Task<Void, Never>?
 
-    init(initialState: ExplorerWindowState? = nil) {
+    init(
+        initialState: ExplorerWindowState? = nil,
+        recoveryJournal: FileOperationRecoveryJournal = FileOperationRecoveryJournal(),
+        operationQueue injectedOperationQueue: FileOperationQueue? = nil
+    ) {
         let settings = ExplorerSettingsStore()
         let homeURL = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
-        let operationQueue = FileOperationQueue()
+        let operationQueue = injectedOperationQueue
+            ?? FileOperationQueue(engine: FileOperationEngine(recoveryJournal: recoveryJournal))
         let clipboard = FileClipboardService()
         let mountedVolumeService = MountedVolumeService()
         let resolvedState = initialState ?? ExplorerWindowState(
@@ -159,6 +167,20 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         window?.performClose(self)
     }
 
+    var hasActiveFileOperations: Bool {
+        session.hasPendingFileOperations
+            || historyTask != nil
+            || operationSnapshots.values.contains {
+                $0.state == .queued || $0.state == .running
+            }
+    }
+
+    func cancelActiveFileOperationsAndWait() async {
+        historyTask?.cancel()
+        await operationQueue.cancelAll()
+        await operationQueue.waitUntilIdle()
+    }
+
     func setViewMode(_ mode: BrowserViewMode) { session.setViewMode(mode) }
     var canChangeViewMode: Bool { session.canChangeViewMode }
     func togglePreview() { session.togglePreview() }
@@ -202,14 +224,43 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) { updateWindowTitle(session.displayTitle) }
-    func windowDidResignKey(_ notification: Notification) { session.closeQuickLook() }
     func windowDidEndLiveResize(_ notification: Notification) { persistWindowState() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard !allowsCloseWithActiveOperations else { return true }
+        guard hasActiveFileOperations else { return true }
+        guard !isPresentingCloseConfirmation else { return false }
+
+        isPresentingCloseConfirmation = true
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "File operations are still running."
+        alert.informativeText = "Keep this tab open, or cancel its file operations and wait for them to stop before closing."
+        alert.addButton(withTitle: "Keep Working")
+        alert.addButton(withTitle: "Cancel Operations and Close")
+        alert.beginSheetModal(for: sender) { [weak self, weak sender] response in
+            guard let self else { return }
+            self.isPresentingCloseConfirmation = false
+            guard response == .alertSecondButtonReturn, let sender else { return }
+            self.closeCancellationTask = Task { [weak self, weak sender] in
+                guard let self else { return }
+                await self.cancelActiveFileOperationsAndWait()
+                guard let sender else { return }
+                self.allowsCloseWithActiveOperations = true
+                self.closeCancellationTask = nil
+                sender.performClose(self)
+            }
+        }
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         persistWindowState()
+        session.closeQuickLook()
         session.cancelLoading()
         operationEventTask?.cancel()
         volumeLoadTask?.cancel()
         historyTask?.cancel()
+        closeCancellationTask?.cancel()
         onClose?()
     }
     private func buildNavigationLocations() -> ExplorerNavigationLocations {
@@ -465,5 +516,7 @@ extension ExplorerWindowController {
         MainActor.assumeIsolated { session.beginQuickLookControl(panel) }
     }
 
-    @objc nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {}
+    @objc nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated { session.endQuickLookControl(panel) }
+    }
 }

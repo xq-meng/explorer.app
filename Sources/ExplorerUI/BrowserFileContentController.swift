@@ -178,7 +178,7 @@ final class BrowserFileContentController: NSViewController {
         tableView.doubleAction = #selector(openSelectedFileRow(_:))
         tableView.setAccessibilityLabel("Folder contents")
         tableView.menu = makeFileContextMenu()
-        tableView.onFileKeyCommand = { [weak self] command in _ = self?.emit(.file(command)) }
+        tableView.onKeyboardCommand = { [weak self] command in self?.emit(command) }
         tableView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
@@ -201,7 +201,7 @@ final class BrowserFileContentController: NSViewController {
         collectionView.allowsMultipleSelection = true
         collectionView.setAccessibilityLabel("Folder contents as icons")
         collectionView.menu = makeFileContextMenu()
-        collectionView.onFileKeyCommand = { [weak self] command in _ = self?.emit(.file(command)) }
+        collectionView.onKeyboardCommand = { [weak self] command in self?.emit(command) }
         collectionView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
@@ -352,9 +352,9 @@ final class BrowserFileContentController: NSViewController {
         guard let action = (sender.representedObject as? FileContextMenuActionBox)?.action else { return }
         switch action {
         case let .file(command):
-            _ = emit(.file(command))
+            _ = emit(BrowserAction.file(command))
         case let .navigation(command):
-            _ = emit(.navigation(command))
+            _ = emit(BrowserAction.navigation(command))
         }
     }
 
@@ -389,6 +389,15 @@ final class BrowserFileContentController: NSViewController {
     @discardableResult
     private func emit(_ action: BrowserAction) -> Bool {
         onAction?(action) ?? false
+    }
+
+    private func emit(_ command: BrowserKeyboardCommand) {
+        switch command {
+        case let .navigation(command):
+            _ = emit(BrowserAction.navigation(command))
+        case let .file(command):
+            _ = emit(BrowserAction.file(command))
+        }
     }
 
     private func dropIntent(for info: NSDraggingInfo) -> BrowserDropIntent {
