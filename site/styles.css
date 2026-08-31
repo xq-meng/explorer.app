@@ -208,6 +208,10 @@ a:hover {
   letter-spacing: -0.045em;
 }
 
+html[lang="zh"] .hero h1 {
+  max-width: 12em;
+}
+
 .lede {
   margin: 0 auto 28px;
   max-width: 46rem;
@@ -315,6 +319,7 @@ a:hover {
 
 .section {
   padding: 72px 0;
+  scroll-margin-top: calc(var(--nav-height) + 12px);
 }
 
 .section h2 {
