@@ -209,7 +209,9 @@ a:hover {
 }
 
 html[lang="zh"] .hero h1 {
-  max-width: 12em;
+  max-width: min(20em, 100%);
+  word-break: keep-all;
+  line-break: strict;
 }
 
 .lede {
