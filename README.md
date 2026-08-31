@@ -4,6 +4,8 @@ A native macOS file manager that uses Windows Explorer-style navigation—tabs, 
 
 The current builds are **preview releases**: unsigned, Apple Silicon only, and still changing. See [Releases](https://github.com/xq-meng/explorer.app/releases) for the latest version.
 
+Before using a preview build for important files, review the current [known issues](docs/known-issues.md). Keep a separate backup of data used to test destructive operations.
+
 <p align="center">
   <img src="misc/screenshot_light.jpg" alt="My Computer home page in light appearance" width="48%">
   <img src="misc/screenshot_dark.jpg" alt="My Computer home page in dark appearance" width="48%">
@@ -118,3 +120,5 @@ Contributor setup, tests, and local tooling are in [docs/development.md](docs/de
 - [Releasing](docs/releasing.md) — preview tags, GitHub Releases, and the Homebrew tap
 - [Architecture](docs/architecture.md) — module layout and safety rules
 - [Roadmap](docs/roadmap.md) — milestones and planned work
+- [Known issues](docs/known-issues.md) — current preview limitations and safety notes
+- [Regression checklist](docs/regression-checklist.md) — automated and manual release gates

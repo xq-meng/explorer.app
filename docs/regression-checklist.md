@@ -1,0 +1,100 @@
+# Release regression checklist
+
+Run this checklist for every preview release. Perform destructive checks only inside a disposable test directory containing generated test data.
+
+## Test record
+
+- Explorer version and build:
+- Commit and tag:
+- macOS version:
+- Mac model and architecture:
+- Local filesystem and case sensitivity:
+- External, network, or cloud providers tested:
+- Tester and date:
+
+## Automated gate
+
+- [ ] The working tree contains only the intended release changes.
+- [ ] `CFBundleShortVersionString`, `CFBundleVersion`, and the release tag are consistent.
+- [ ] `swift test -Xswiftc -warnings-as-errors` passes.
+- [ ] `swift build -c release -Xswiftc -warnings-as-errors` passes.
+- [ ] `./scripts/package-app.sh` produces `.build/artifacts/Explorer.app`.
+- [ ] `plutil -lint .build/artifacts/Explorer.app/Contents/Info.plist` passes.
+- [ ] `codesign --verify --deep --strict .build/artifacts/Explorer.app` passes.
+- [ ] The packaged binary and archive architecture match the advertised release architecture.
+- [ ] Documentation links resolve and the [known issues](known-issues.md) match the release.
+
+## Launch and navigation
+
+- [ ] Launching normally opens My Computer without an empty or white content area.
+- [ ] My Computer shows Favorites, mounted volumes, capacity information, and available network locations.
+- [ ] Sidebar shortcuts open their locations without expanding as a directory tree.
+- [ ] Back, Forward, Up, Refresh, breadcrumbs, and Command-L path entry navigate correctly.
+- [ ] Opening one or more folders through Finder or Launch Services creates the expected tabs.
+- [ ] New windows and tabs have independent paths, histories, and selections.
+- [ ] Closing tabs, closing the final tab, and quitting the app do not crash.
+
+## Views and selection
+
+- [ ] Details and Icons views show the same items and preserve selection when switching.
+- [ ] Name, Size, Modified, and Kind sorting work in both ascending and descending order.
+- [ ] Hidden Files and Preview Pane menu items show the correct checkmarks and update every open tab.
+- [ ] The preview divider disappears when the preview pane is hidden and returns at a usable width.
+- [ ] Single selection, multiple selection, Select All, keyboard navigation, and context-click targeting work.
+- [ ] Cut and hidden items are visually dimmed without losing hover, selection, or drop feedback.
+- [ ] Cloud-only items show their cloud badge without changing the row layout.
+
+## Search and preview
+
+- [ ] Search finds immediate and nested matches in the current folder tree.
+- [ ] Clearing search restores the directory contents and valid selection.
+- [ ] Navigating or closing a tab during search does not display stale results.
+- [ ] Space opens and closes Quick Look for the current selection.
+- [ ] The preview pane updates when selection changes and handles unsupported files gracefully.
+- [ ] Rapid icon-view scrolling does not accumulate thumbnails for offscreen items.
+
+## File operations
+
+- [ ] New Folder creates a folder and begins inline rename.
+- [ ] Rename, Copy, Cut, Paste, Duplicate, and internal drag and drop operate on the intended items and destination.
+- [ ] Same-name conflicts exercise Replace, Keep Both, Skip, Stop, and Apply to All.
+- [ ] A failed replacement restores the original destination.
+- [ ] A cross-volume move copies successfully before removing the source.
+- [ ] The operation footer shows queued/running progress and Cancel stops the selected operation safely.
+- [ ] After cancellation completes, closing the operation's window does not leave an active or hidden operation.
+- [ ] Undo and Redo round-trip supported create, rename, copy, move, duplicate, and Trash operations.
+- [ ] Delete moves items to the Trash.
+- [ ] Shift-Delete defaults to Cancel; confirming permanently removes only the selected disposable test items.
+- [ ] Permission errors, missing sources, read-only destinations, and unavailable volumes produce understandable errors without silent overwrite.
+
+## External integration
+
+- [ ] Creating, renaming, and deleting an item in Finder refreshes the current Explorer folder.
+- [ ] Dragging file URLs to and from Finder works with expected copy/move behavior and Option-key override.
+- [ ] At least one file-promise source, such as Mail or Safari, can drop into a disposable directory.
+- [ ] Mounting and unmounting an external or network volume refreshes My Computer and the sidebar.
+- [ ] If available, browse, search, preview, copy, and rename an iCloud item, including one initially cloud-only.
+
+## Appearance and accessibility
+
+- [ ] Light and Dark appearances remain readable with no clipped controls.
+- [ ] Full Keyboard Access can reach the toolbar, path field, sidebar, file view, preview, and confirmation dialogs.
+- [ ] VoiceOver announces navigation controls, folder contents, selection, operation progress, and destructive confirmations.
+- [ ] Window resizing and full screen keep the tab strip, sidebar, content, and preview usable.
+
+## Release publication
+
+- [ ] The GitHub Actions CI run passes for the release commit.
+- [ ] The release workflow publishes the expected prerelease archive.
+- [ ] The GitHub asset version and SHA-256 match the Homebrew Cask.
+- [ ] Installing or upgrading through Homebrew launches the published build after following the documented quarantine step.
+- [ ] Release notes link to the current [known issues](known-issues.md).
+
+## Stop-ship conditions
+
+Do not publish when any of the following is reproducible:
+
+- Silent overwrite, data loss, deletion of an unintended item, or removal of a move source before its copy completes.
+- A crash or hang in launch, navigation, preview, conflict handling, or a supported file operation.
+- Stale asynchronous results appearing in the wrong folder or tab.
+- Failure of the automated gate, package signature verification, or release/Homebrew checksum synchronization.

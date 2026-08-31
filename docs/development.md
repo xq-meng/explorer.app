@@ -11,7 +11,7 @@ Open `Package.swift` in Xcode, or work from Terminal with Swift Package Manager.
 
 ```bash
 swift build
-swift test
+swift test -Xswiftc -warnings-as-errors
 swift run ExplorerApp
 ```
 
@@ -23,6 +23,8 @@ For a normal macOS application bundle:
 ```
 
 The bundle is written to `.build/artifacts/Explorer.app`. It is ad-hoc signed and suitable for local development.
+
+Before publishing a preview, complete the [release regression checklist](regression-checklist.md). It includes the strict-warning build, package verification, destructive-operation smoke tests in disposable data, and external-integration checks.
 
 ## App icon
 
@@ -38,4 +40,4 @@ The master must remain full-canvas and opaque so current macOS versions do not a
 
 Pushes and pull requests run `.github/workflows/ci.yml`, which builds and tests on macOS.
 
-Preview releases are documented in [releasing.md](releasing.md). Product scope and milestones are in [roadmap.md](roadmap.md).
+Preview releases are documented in [releasing.md](releasing.md). Product scope and milestones are in [roadmap.md](roadmap.md), and current limitations are tracked in [known-issues.md](known-issues.md).
