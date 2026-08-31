@@ -10,6 +10,7 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var pendingLaunchURLs: [URL] = []
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        NSWindow.allowsAutomaticWindowTabbing = true
         installMainMenu()
     }
 
@@ -59,7 +60,11 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     @objc func newTab(_ sender: Any?) {
-        currentWindowController?.newTab()
+        guard let currentWindowController else {
+            openWindow()
+            return
+        }
+        openTab(state: currentWindowController.stateForNewTab, relativeTo: currentWindowController)
     }
 
     @objc func closeTab(_ sender: Any?) {
@@ -148,25 +153,60 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private func presentIncomingURLs(_ urls: [URL]) {
         let locations = ExplorerOpenURLResolver.locations(for: urls)
         guard !locations.isEmpty else { return }
-        if let controller = currentWindowController ?? windowControllers.last {
-            controller.openLocations(locations)
-            controller.window?.makeKeyAndOrderFront(self)
-            NSApp.activate(ignoringOtherApps: true)
-            return
+        var current = currentWindowController ?? windowControllers.last
+        for location in locations {
+            if let parent = current {
+                current = openTab(
+                    state: parent.stateForNewTab(at: location),
+                    relativeTo: parent
+                )
+            } else {
+                current = openWindow(
+                    initialState: ExplorerWindowState(
+                        location: location,
+                        viewMode: settings.viewMode,
+                        sortDescriptor: .nameAscending
+                    )
+                )
+            }
         }
-        openWindow(initialLocations: locations)
+        current?.window?.makeKeyAndOrderFront(self)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func openWindow(initialLocations: [BrowserLocation] = [.computer]) {
-        let controller = ExplorerWindowController(initialLocations: initialLocations)
+    @discardableResult
+    private func openWindow(
+        initialState: ExplorerWindowState? = nil,
+        tabbedWith parent: ExplorerWindowController? = nil
+    ) -> ExplorerWindowController {
+        let controller = ExplorerWindowController(initialState: initialState)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windowControllers.removeAll { $0 === controller }
         }
+        controller.onRequestNewTab = { [weak self, weak controller] state in
+            guard let self, let controller else { return }
+            self.openTab(state: state, relativeTo: controller)
+        }
+        controller.onNavigationLocationsChange = { [weak self] in
+            self?.windowControllers.forEach { $0.reloadNavigationLocations() }
+        }
         windowControllers.append(controller)
         controller.showWindow(self)
+        if let parentWindow = parent?.window, let newWindow = controller.window {
+            parentWindow.addTabbedWindow(newWindow, ordered: .above)
+        }
         controller.window?.makeKeyAndOrderFront(self)
         NSApp.activate(ignoringOtherApps: true)
+        return controller
+    }
+
+    @discardableResult
+    private func openTab(
+        state: ExplorerWindowState,
+        relativeTo parent: ExplorerWindowController
+    ) -> ExplorerWindowController {
+        openWindow(initialState: state, tabbedWith: parent)
     }
 
     private func installMainMenu() {

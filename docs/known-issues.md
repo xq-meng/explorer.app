@@ -10,8 +10,8 @@ This document tracks user-visible limitations in the current Explorer.app previe
 
 ## File operations
 
-- The operation queue and Undo/Redo history are held in memory. Closing the window or quitting Explorer discards that history.
-- Closing a window or quitting while an operation is running is not yet guarded by a confirmation or recovery workflow. Cancel the operation and wait for it to stop before closing Explorer.
+- The operation queue and Undo/Redo history are held in memory per window tab. Closing that tab or quitting Explorer discards its history.
+- Closing a tab or window, or quitting while an operation is running, is not yet guarded by a confirmation or recovery workflow. Cancel the operation and wait for it to stop before closing Explorer.
 - A crash or forced quit during a copy, move, or replacement can leave a partial destination or a hidden `.explorer-replace-*` recovery item beside the destination. Explorer does not yet scan for or recover these artifacts at launch.
 - File mutations do not yet use `NSFileCoordinator`. Concurrent changes from another Explorer window, Finder, document apps, iCloud, or other File Provider clients can race with an operation.
 - Replacement operations and permanent deletion are intentionally not undoable. Shift-Delete permanently removes selected items after confirmation.
