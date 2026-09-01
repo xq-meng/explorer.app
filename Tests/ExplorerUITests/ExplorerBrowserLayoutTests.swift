@@ -725,29 +725,43 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertFalse(bar.isEditingPath)
     }
 
-    func testBreadcrumbBarEntersPathEditingOnASingleClick() {
-        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
-        let clickRecognizers = bar.gestureRecognizers.compactMap { $0 as? NSClickGestureRecognizer }
-        XCTAssertEqual(clickRecognizers.count, 1)
-        XCTAssertEqual(clickRecognizers.first?.numberOfClicksRequired, 1)
-        XCTAssertFalse(clickRecognizers.first?.delaysPrimaryMouseButtonEvents ?? true)
+    func testBreadcrumbBarEntersPathEditingWhenEmptyScrollAreaIsClicked() {
+        let bar = BrowserBreadcrumbBar()
+        let window = makeBreadcrumbTestWindow(hosting: bar)
+        defer { window.orderOut(nil) }
+
+        guard let pathScrollView = allDescendants(of: bar, as: NSScrollView.self).first else {
+            return XCTFail("Expected the breadcrumb scroll view")
+        }
+        let localPoint = NSPoint(x: pathScrollView.bounds.maxX - 8, y: pathScrollView.bounds.midY)
+        sendPrimaryClick(to: pathScrollView, at: localPoint, in: window)
+
+        XCTAssertTrue(bar.isEditingPath)
     }
 
     func testBreadcrumbBarEditsOnCurrentComponentAndNavigatesOnParents() {
-        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
+        let bar = BrowserBreadcrumbBar()
         bar.display(URL(fileURLWithPath: "/Users/demo/Documents", isDirectory: true))
+        let window = makeBreadcrumbTestWindow(hosting: bar)
+        defer { window.orderOut(nil) }
         let pathButtons = allDescendants(of: bar, as: NSButton.self).filter { !$0.title.isEmpty }
-        XCTAssertGreaterThanOrEqual(pathButtons.count, 2)
+        guard let parentButton = pathButtons.first(where: { $0.title == "demo" }),
+              let currentButton = pathButtons.first(where: { $0.title == "Documents" }) else {
+            return XCTFail("Expected parent and current breadcrumb buttons")
+        }
 
         var navigated: BrowserLocation?
         bar.onNavigate = { navigated = $0 }
 
-        pathButtons[1].performClick(nil)
-        XCTAssertNotNil(navigated)
+        sendPrimaryClick(to: parentButton, at: parentButton.bounds.center, in: window)
+        XCTAssertEqual(
+            navigated,
+            .directory(URL(fileURLWithPath: "/Users/demo", isDirectory: true))
+        )
         XCTAssertFalse(bar.isEditingPath)
 
         navigated = nil
-        pathButtons.last?.performClick(nil)
+        sendPrimaryClick(to: currentButton, at: currentButton.bounds.center, in: window)
         XCTAssertNil(navigated)
         XCTAssertTrue(bar.isEditingPath)
     }
@@ -1053,4 +1067,56 @@ private func allDescendants<T: NSView>(of root: NSView, as type: T.Type) -> [T] 
     var matches = root.subviews.compactMap { $0 as? T }
     for child in root.subviews { matches.append(contentsOf: allDescendants(of: child, as: type)) }
     return matches
+}
+
+@MainActor
+private func makeBreadcrumbTestWindow(hosting bar: BrowserBreadcrumbBar) -> NSWindow {
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 480, height: 30),
+        styleMask: .borderless,
+        backing: .buffered,
+        defer: false
+    )
+    let container = NSView(frame: window.contentView?.bounds ?? .zero)
+    container.addSubview(bar)
+    window.contentView = container
+    NSLayoutConstraint.activate([
+        bar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        bar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        bar.topAnchor.constraint(equalTo: container.topAnchor),
+        bar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+    ])
+    window.makeKeyAndOrderFront(nil)
+    window.layoutIfNeeded()
+    return window
+}
+
+@MainActor
+private func sendPrimaryClick(to view: NSView, at point: NSPoint, in window: NSWindow) {
+    let windowPoint = view.convert(point, to: nil)
+    let event: (NSEvent.EventType, Float) -> NSEvent = { type, pressure in
+        NSEvent.mouseEvent(
+            with: type,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: pressure
+        )!
+    }
+    NSApp.postEvent(event(.leftMouseUp, 0), atStart: false)
+    window.sendEvent(event(.leftMouseDown, 1))
+    _ = NSApp.nextEvent(
+        matching: .leftMouseUp,
+        until: .distantPast,
+        inMode: .default,
+        dequeue: true
+    )
+}
+
+private extension NSRect {
+    var center: NSPoint { NSPoint(x: midX, y: midY) }
 }

@@ -9,6 +9,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
 
     private let componentStack = NSStackView()
     private let scrollView = NSScrollView()
+    private let clipView = BreadcrumbClipView()
     private let pathField = NSTextField()
     private let editButton = NSButton()
     private var displayedLocation = BrowserLocation.directory(URL(fileURLWithPath: "/"))
@@ -30,6 +31,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         componentStack.edgeInsets = NSEdgeInsets(top: 2, left: 7, bottom: 2, right: 4)
         componentStack.translatesAutoresizingMaskIntoConstraints = false
 
+        scrollView.contentView = clipView
         scrollView.documentView = componentStack
         scrollView.drawsBackground = false
         scrollView.hasHorizontalScroller = false
@@ -78,10 +80,9 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
             editButton.heightAnchor.constraint(equalToConstant: 20),
         ])
 
-        let click = NSClickGestureRecognizer(target: self, action: #selector(handleBarClick(_:)))
-        click.numberOfClicksRequired = 1
-        click.delaysPrimaryMouseButtonEvents = false
-        addGestureRecognizer(click)
+        clipView.onPrimaryClick = { [weak self] in
+            self?.beginEditingPath(nil)
+        }
         display(.directory(URL(fileURLWithPath: "/")))
     }
 
@@ -201,25 +202,6 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         onNavigate?(location)
     }
 
-    @objc private func handleBarClick(_ gesture: NSClickGestureRecognizer) {
-        guard gesture.state == .ended, !isEditingPath else { return }
-        let location = gesture.location(in: self)
-        if editButton.frame.contains(location) { return }
-        if breadcrumbButton(at: location) != nil { return }
-        beginEditingPath(nil)
-    }
-
-    private func breadcrumbButton(at point: NSPoint) -> BreadcrumbButton? {
-        var view = hitTest(point)
-        while let current = view, current !== self {
-            if let button = current as? BreadcrumbButton {
-                return button
-            }
-            view = current.superview
-        }
-        return nil
-    }
-
     @objc private func beginEditingPath(_ sender: Any?) {
         pathField.stringValue = pathFieldText
         pathField.isHidden = false
@@ -299,6 +281,18 @@ private final class BreadcrumbButton: NSButton {
     }
 
     required init?(coder: NSCoder) { nil }
+}
+
+private final class BreadcrumbClipView: NSClipView {
+    var onPrimaryClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 1 else {
+            super.mouseDown(with: event)
+            return
+        }
+        onPrimaryClick?()
+    }
 }
 
 private struct Unchecked<Value>: @unchecked Sendable {
