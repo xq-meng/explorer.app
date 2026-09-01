@@ -437,7 +437,7 @@ public final class ExplorerBrowserViewController: NSViewController {
     }
 
     private func makeNavigationButton(symbol: String, help: String, tag: Int) -> NSButton {
-        let button = NSButton()
+        let button = BrowserToolbarButton()
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: help)
         button.bezelStyle = .inline
         button.isBordered = false

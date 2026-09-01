@@ -11,7 +11,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     private let scrollView = NSScrollView()
     private let clipView = BreadcrumbClipView()
     private let pathField = NSTextField()
-    private let editButton = NSButton()
+    private let editButton = BrowserToolbarButton()
     private var displayedLocation = BrowserLocation.directory(URL(fileURLWithPath: "/"))
     private var displayedTrail: [BrowserPathComponent]?
     private var outsideClickMonitor: Any?
@@ -37,6 +37,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
         scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        clipView.toolTip = "Edit path (Command-L)"
         NSLayoutConstraint.activate([
             componentStack.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
             componentStack.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
@@ -269,7 +270,7 @@ final class BrowserBreadcrumbBar: NSView, NSTextFieldDelegate {
     }
 }
 
-private final class BreadcrumbButton: NSButton {
+private final class BreadcrumbButton: BrowserToolbarButton {
     let location: BrowserLocation
 
     init(title: String, location: BrowserLocation, target: AnyObject?, action: Selector?) {

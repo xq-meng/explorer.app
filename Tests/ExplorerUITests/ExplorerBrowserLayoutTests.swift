@@ -725,6 +725,35 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertFalse(bar.isEditingPath)
     }
 
+    func testToolbarButtonsShowHoverFeedbackOnlyWhileEnabled() {
+        let button = BrowserToolbarButton(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
+        XCTAssertFalse(button.showsHoverHighlight)
+
+        button.setHovered(true)
+        XCTAssertTrue(button.showsHoverHighlight)
+
+        button.isEnabled = false
+        XCTAssertFalse(button.showsHoverHighlight)
+
+        button.isEnabled = true
+        button.setHovered(false)
+        XCTAssertFalse(button.showsHoverHighlight)
+    }
+
+    func testNavigationAndBreadcrumbActionsUseHoverButtons() {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        let navigationButtons = allDescendants(of: controller.view, as: BrowserToolbarButton.self)
+            .filter { ["Back", "Forward", "Up"].contains($0.toolTip ?? "") }
+        XCTAssertEqual(navigationButtons.count, 3)
+
+        let bar = BrowserBreadcrumbBar(frame: NSRect(x: 0, y: 0, width: 480, height: 30))
+        bar.display(URL(fileURLWithPath: "/Users/demo/Documents", isDirectory: true))
+        let breadcrumbButtons = allDescendants(of: bar, as: BrowserToolbarButton.self)
+        XCTAssertGreaterThanOrEqual(breadcrumbButtons.count, 5)
+        XCTAssertTrue(breadcrumbButtons.contains { $0.toolTip == "Edit path (Command-L)" })
+    }
+
     func testBreadcrumbBarEntersPathEditingWhenEmptyScrollAreaIsClicked() {
         let bar = BrowserBreadcrumbBar()
         let window = makeBreadcrumbTestWindow(hosting: bar)
