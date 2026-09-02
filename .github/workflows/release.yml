@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Check out Explorer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate toolchain
         run: |
@@ -124,7 +124,7 @@ jobs:
           fi
 
       - name: Check out Homebrew tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: xq-meng/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
