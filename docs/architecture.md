@@ -18,6 +18,9 @@ ExplorerApp         Lifecycle, dependency composition, tabs, and persisted state
 - Coordinate mutations with other macOS file clients through `NSFileCoordinator`.
 - Journal replacement phases before moving the existing destination, then
   restore or finalize the transaction on the next launch after interruption.
+- Copy into a hidden sibling and journal its filesystem identity before an
+  atomic destination commit; cross-volume moves remove their source only after
+  the committed destination and unchanged source have been verified.
 - Run Undo/Redo through the same conflict validation; replacement operations are intentionally not recorded as undoable.
 - Move across volumes by copying successfully before removing the source.
 - Send normal deletion to the Trash.

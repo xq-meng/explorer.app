@@ -354,6 +354,12 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         if !report.finalizedDestinations.isEmpty {
             details.append("Finished cleaning up \(report.finalizedDestinations.count) completed replacement(s).")
         }
+        if !report.discardedTransfers.isEmpty {
+            details.append("Removed \(report.discardedTransfers.count) incomplete temporary transfer(s).")
+        }
+        if !report.completedTransfers.isEmpty {
+            details.append("Finished \(report.completedTransfers.count) interrupted transfer(s).")
+        }
         if !report.failures.isEmpty {
             details.append("Could not recover \(report.failures.count) item(s). Recovery records were preserved for another attempt.")
         }

@@ -326,6 +326,227 @@ final class FileOperationEngineTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("source.txt").path))
     }
 
+    func testCrossVolumeMoveStagesAndCommitsBeforeRemovingSource() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destinationDirectory = root.appendingPathComponent("Out", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("source.txt")
+        let journalDirectory = root.appendingPathComponent("Journal", isDirectory: true)
+        try Data("complete".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: false)
+        let client = CrossVolumeRecordingFileManager(source: source, destinationDirectory: destinationDirectory)
+        let journal = FileOperationRecoveryJournal(directory: journalDirectory)
+        let transferEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+        _ = try await transferEngine.execute(.move(sources: [source], to: destinationDirectory))
+
+        XCTAssertEqual(client.events, ["copy-to-stage", "commit-destination", "remove-source"])
+        let copiedDestination = try XCTUnwrap(client.copiedDestination)
+        XCTAssertTrue(copiedDestination.lastPathComponent.hasPrefix(".explorer-stage-"))
+        XCTAssertEqual(copiedDestination.deletingLastPathComponent(), destinationDirectory)
+        XCTAssertFalse(client.finalDestinationExistedDuringCopy)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try String(contentsOf: destination), "complete")
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(atPath: destinationDirectory.path)
+                .allSatisfy { !$0.hasPrefix(".explorer-stage-") }
+        )
+        let pendingEntryCount = try await journal.pendingEntryCount()
+        XCTAssertEqual(pendingEntryCount, 0)
+    }
+
+    func testOrdinaryCopyUsesAHiddenSiblingStage() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destinationDirectory = root.appendingPathComponent("Out", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("source.txt")
+        let journal = FileOperationRecoveryJournal(
+            directory: root.appendingPathComponent("Journal", isDirectory: true)
+        )
+        try Data("complete".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: false)
+        let client = CrossVolumeRecordingFileManager(source: source, destinationDirectory: destinationDirectory)
+        let copyEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+        _ = try await copyEngine.execute(.copy(sources: [source], to: destinationDirectory))
+
+        let copiedDestination = try XCTUnwrap(client.copiedDestination)
+        XCTAssertTrue(copiedDestination.lastPathComponent.hasPrefix(".explorer-stage-"))
+        XCTAssertEqual(copiedDestination.deletingLastPathComponent(), destinationDirectory)
+        XCTAssertFalse(client.finalDestinationExistedDuringCopy)
+        XCTAssertEqual(try String(contentsOf: destination), "complete")
+        XCTAssertEqual(client.events, ["copy-to-stage", "commit-destination"])
+    }
+
+    func testCrossVolumeMoveCopyFailurePreservesSourceAndRemovesPartialStage() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destinationDirectory = root.appendingPathComponent("Out", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("source.txt")
+        let journalDirectory = root.appendingPathComponent("Journal", isDirectory: true)
+        try Data("complete".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: false)
+        let client = CrossVolumeRecordingFileManager(
+            source: source,
+            destinationDirectory: destinationDirectory,
+            failsDuringCopy: true
+        )
+        let journal = FileOperationRecoveryJournal(directory: journalDirectory)
+        let transferEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+        do {
+            _ = try await transferEngine.execute(.move(sources: [source], to: destinationDirectory))
+            XCTFail("Expected the injected copy failure")
+        } catch {
+            XCTAssertEqual(try String(contentsOf: source), "complete")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            XCTAssertTrue(
+                try FileManager.default.contentsOfDirectory(atPath: destinationDirectory.path)
+                    .allSatisfy { !$0.hasPrefix(".explorer-stage-") }
+            )
+            let pendingEntryCount = try await journal.pendingEntryCount()
+            XCTAssertEqual(pendingEntryCount, 0)
+            XCTAssertEqual(client.events, ["copy-to-stage"])
+        }
+    }
+
+    func testCrossVolumeMoveSourceRemovalFailureRollsBackCommittedDestination() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destinationDirectory = root.appendingPathComponent("Out", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("source.txt")
+        let journalDirectory = root.appendingPathComponent("Journal", isDirectory: true)
+        try Data("complete".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: false)
+        let client = CrossVolumeRecordingFileManager(
+            source: source,
+            destinationDirectory: destinationDirectory,
+            failsBeforeSourceRemoval: true
+        )
+        let journal = FileOperationRecoveryJournal(directory: journalDirectory)
+        let transferEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+        do {
+            _ = try await transferEngine.execute(.move(sources: [source], to: destinationDirectory))
+            XCTFail("Expected the injected source removal failure")
+        } catch {
+            XCTAssertEqual(try String(contentsOf: source), "complete")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            let pendingEntryCount = try await journal.pendingEntryCount()
+            XCTAssertEqual(pendingEntryCount, 0)
+        }
+    }
+
+    func testCrossVolumeMoveTreatsPostRemovalErrorAsCommitted() async throws {
+        let source = root.appendingPathComponent("source.txt")
+        let destinationDirectory = root.appendingPathComponent("Out", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("source.txt")
+        let journalDirectory = root.appendingPathComponent("Journal", isDirectory: true)
+        try Data("complete".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: false)
+        let client = CrossVolumeRecordingFileManager(
+            source: source,
+            destinationDirectory: destinationDirectory,
+            failsAfterSourceRemoval: true
+        )
+        let journal = FileOperationRecoveryJournal(directory: journalDirectory)
+        let transferEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+        let result = try await transferEngine.execute(.move(sources: [source], to: destinationDirectory))
+
+        XCTAssertEqual(result.completedItems, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try String(contentsOf: destination), "complete")
+        let pendingEntryCount = try await journal.pendingEntryCount()
+        XCTAssertEqual(pendingEntryCount, 0)
+    }
+
+    func testCrossVolumeMoveCommitFailuresPreserveSourceAndRemoveOwnDestination() async throws {
+        for failsAfterCommit in [false, true] {
+            let caseRoot = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let source = caseRoot.appendingPathComponent("source.txt")
+            let destinationDirectory = caseRoot.appendingPathComponent("Out", isDirectory: true)
+            let destination = destinationDirectory.appendingPathComponent("source.txt")
+            let journal = FileOperationRecoveryJournal(
+                directory: caseRoot.appendingPathComponent("Journal", isDirectory: true)
+            )
+            try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+            try Data("complete".utf8).write(to: source)
+            let client = CrossVolumeRecordingFileManager(
+                source: source,
+                destinationDirectory: destinationDirectory,
+                failsBeforeCommit: !failsAfterCommit,
+                failsAfterCommit: failsAfterCommit
+            )
+            let transferEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+            do {
+                _ = try await transferEngine.execute(.move(sources: [source], to: destinationDirectory))
+                XCTFail("Expected the injected commit failure")
+            } catch {
+                XCTAssertEqual(try String(contentsOf: source), "complete")
+                XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+                let pendingEntryCount = try await journal.pendingEntryCount()
+                XCTAssertEqual(pendingEntryCount, 0)
+            }
+        }
+    }
+
+    func testCrossVolumeDirectoryMoveCommitsACompleteTreeBeforeRemovingSource() async throws {
+        let source = root.appendingPathComponent("Folder", isDirectory: true)
+        let child = source.appendingPathComponent("child.txt")
+        let destinationDirectory = root.appendingPathComponent("Out", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("Folder", isDirectory: true)
+        let journal = FileOperationRecoveryJournal(
+            directory: root.appendingPathComponent("Journal", isDirectory: true)
+        )
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try Data("complete".utf8).write(to: child)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: false)
+        let client = CrossVolumeRecordingFileManager(
+            source: source,
+            destinationDirectory: destinationDirectory
+        )
+        let transferEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+        _ = try await transferEngine.execute(.move(sources: [source], to: destinationDirectory))
+
+        XCTAssertEqual(client.events, ["copy-to-stage", "commit-destination", "remove-source"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("child.txt")), "complete")
+        let pendingEntryCount = try await journal.pendingEntryCount()
+        XCTAssertEqual(pendingEntryCount, 0)
+    }
+
+    func testCrossVolumeDirectoryMovePreservesSourceWhenADescendantChangesDuringCopy() async throws {
+        let source = root.appendingPathComponent("Folder", isDirectory: true)
+        let child = source.appendingPathComponent("child.txt")
+        let destinationDirectory = root.appendingPathComponent("Out", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("Folder", isDirectory: true)
+        let journal = FileOperationRecoveryJournal(
+            directory: root.appendingPathComponent("Journal", isDirectory: true)
+        )
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try Data("before".utf8).write(to: child)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: false)
+        let client = CrossVolumeRecordingFileManager(
+            source: source,
+            destinationDirectory: destinationDirectory,
+            mutatesSourceAfterCopy: true
+        )
+        let transferEngine = FileOperationEngine(fileManager: client, recoveryJournal: journal)
+
+        do {
+            _ = try await transferEngine.execute(.move(sources: [source], to: destinationDirectory))
+            XCTFail("Expected the changed source tree to abort the move")
+        } catch {
+            XCTAssertEqual(try String(contentsOf: child), "changed-during-copy")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            XCTAssertTrue(
+                try FileManager.default.contentsOfDirectory(atPath: destinationDirectory.path)
+                    .allSatisfy { !$0.hasPrefix(".explorer-stage-") }
+            )
+            let pendingEntryCount = try await journal.pendingEntryCount()
+            XCTAssertEqual(pendingEntryCount, 0)
+        }
+    }
+
     func testQueueForwardsInteractiveConflictResolver() async throws {
         let source = root.appendingPathComponent("source.txt")
         let destination = root.appendingPathComponent("Out", isDirectory: true)
@@ -535,5 +756,169 @@ private final class CancellableCopyFileManager: FileManagerClient, @unchecked Se
 
     func volumeIdentifier(for url: URL) throws -> String? {
         try backing.volumeIdentifier(for: url)
+    }
+}
+
+private final class CrossVolumeRecordingFileManager: FileManagerClient, @unchecked Sendable {
+    private let backing = LocalFileManagerClient()
+    private let source: URL
+    private let destinationDirectory: URL
+    private let failsDuringCopy: Bool
+    private let failsBeforeSourceRemoval: Bool
+    private let failsAfterSourceRemoval: Bool
+    private let failsBeforeCommit: Bool
+    private let failsAfterCommit: Bool
+    private let mutatesSourceAfterCopy: Bool
+    private let lock = NSLock()
+    private var recordedEvents: [String] = []
+    private var copiedDestinationStorage: URL?
+    private var finalDestinationExistedDuringCopyStorage = false
+
+    init(
+        source: URL,
+        destinationDirectory: URL,
+        failsDuringCopy: Bool = false,
+        failsBeforeSourceRemoval: Bool = false,
+        failsAfterSourceRemoval: Bool = false,
+        failsBeforeCommit: Bool = false,
+        failsAfterCommit: Bool = false,
+        mutatesSourceAfterCopy: Bool = false
+    ) {
+        self.source = source.standardizedFileURL
+        self.destinationDirectory = destinationDirectory.standardizedFileURL
+        self.failsDuringCopy = failsDuringCopy
+        self.failsBeforeSourceRemoval = failsBeforeSourceRemoval
+        self.failsAfterSourceRemoval = failsAfterSourceRemoval
+        self.failsBeforeCommit = failsBeforeCommit
+        self.failsAfterCommit = failsAfterCommit
+        self.mutatesSourceAfterCopy = mutatesSourceAfterCopy
+    }
+
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedEvents
+    }
+
+    var copiedDestination: URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return copiedDestinationStorage
+    }
+
+    var finalDestinationExistedDuringCopy: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return finalDestinationExistedDuringCopyStorage
+    }
+
+    func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
+        backing.fileExists(atPath: path, isDirectory: isDirectory)
+    }
+
+    func createDirectory(
+        at url: URL,
+        withIntermediateDirectories createIntermediates: Bool,
+        attributes: [FileAttributeKey: Any]?
+    ) throws {
+        try backing.createDirectory(
+            at: url,
+            withIntermediateDirectories: createIntermediates,
+            attributes: attributes
+        )
+    }
+
+    func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        try backing.copyItem(at: srcURL, to: dstURL)
+    }
+
+    func copyItemWithProgress(
+        at srcURL: URL,
+        to dstURL: URL,
+        onBytesCopied: @escaping @Sendable (Int64) async -> Void
+    ) async throws {
+        record("copy-to-stage")
+        recordCopyDestination(dstURL)
+        if failsDuringCopy {
+            try Data("partial".utf8).write(to: dstURL)
+            throw NSError(
+                domain: "ExplorerOperationsTests",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "injected partial copy failure"]
+            )
+        }
+        try backing.copyItem(at: srcURL, to: dstURL)
+        if mutatesSourceAfterCopy {
+            try Data("changed-during-copy".utf8).write(
+                to: source.appendingPathComponent("child.txt")
+            )
+        }
+    }
+
+    func moveItem(at srcURL: URL, to dstURL: URL) throws {
+        if srcURL.lastPathComponent.hasPrefix(".explorer-stage-") {
+            record("commit-destination")
+            if failsBeforeCommit {
+                throw NSError(
+                    domain: "ExplorerOperationsTests",
+                    code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "injected pre-commit failure"]
+                )
+            }
+        }
+        try backing.moveItem(at: srcURL, to: dstURL)
+        if srcURL.lastPathComponent.hasPrefix(".explorer-stage-"), failsAfterCommit {
+            throw NSError(
+                domain: "ExplorerOperationsTests",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "injected post-commit failure"]
+            )
+        }
+    }
+
+    func removeItem(at URL: URL) throws {
+        if URL.standardizedFileURL == source {
+            record("remove-source")
+            if failsBeforeSourceRemoval {
+                throw NSError(
+                    domain: "ExplorerOperationsTests",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "injected source removal failure"]
+                )
+            }
+        }
+        try backing.removeItem(at: URL)
+        if URL.standardizedFileURL == source, failsAfterSourceRemoval {
+            throw NSError(
+                domain: "ExplorerOperationsTests",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "injected post-removal failure"]
+            )
+        }
+    }
+
+    func trashItem(
+        at url: URL,
+        resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?
+    ) throws {
+        try backing.trashItem(at: url, resultingItemURL: resultingItemURL)
+    }
+
+    func volumeIdentifier(for url: URL) throws -> String? {
+        url.standardizedFileURL == source ? "source-volume" : "destination-volume"
+    }
+
+    private func record(_ event: String) {
+        lock.lock()
+        recordedEvents.append(event)
+        lock.unlock()
+    }
+
+    private func recordCopyDestination(_ url: URL) {
+        lock.lock()
+        copiedDestinationStorage = url
+        let finalDestination = destinationDirectory.appendingPathComponent(source.lastPathComponent)
+        finalDestinationExistedDuringCopyStorage = FileManager.default.fileExists(atPath: finalDestination.path)
+        lock.unlock()
     }
 }

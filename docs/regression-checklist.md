@@ -62,6 +62,10 @@ Run this checklist for every preview release. Perform destructive checks only in
 - [ ] Same-name conflicts exercise Replace, Keep Both, Skip, Stop, and Apply to All.
 - [ ] A failed replacement restores the original destination.
 - [ ] Simulated `backupCreated` recovery restores the original destination, and simulated `replacementCompleted` recovery keeps the replacement and removes its backup.
+- [ ] Cancelling or failing a copy removes its exact `.explorer-stage-*` partial item and never exposes a partial requested destination.
+- [ ] Simulated recovery before staged-copy commit discards the temporary item; recovery after the atomic commit keeps the complete destination.
+- [ ] A replacement rename interrupted after its source move keeps the new destination; interruption before that move restores the old destination without removing the source.
+- [ ] Cross-volume move recovery removes an unchanged regular-file or folder source only after validating the committed destination; a source whose file or descendant metadata changed is preserved.
 - [ ] Corrupt or unavailable recovery records are retained and reported instead of discarded.
 - [ ] A cross-volume move copies successfully before removing the source.
 - [ ] The operation footer shows queued/running progress and Cancel stops the selected operation safely.

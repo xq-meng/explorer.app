@@ -12,8 +12,10 @@ This document tracks user-visible limitations in the current Explorer.app previe
 
 - The operation queue and Undo/Redo history are held in memory per window tab. Closing that tab or quitting Explorer discards its history.
 - Closing a tab or window, or quitting while an operation is running, now requires either keeping Explorer open or cancelling and waiting for the operation to stop.
-- Replacement operations use a write-ahead recovery journal. On launch, Explorer restores the original destination when replacement did not finish, or removes the old backup when it did. Recovery records that cannot be processed are retained and reported.
-- A crash or forced quit during an ordinary, non-replacement copy or cross-volume move can still leave a partial destination. Full operation journaling is not yet implemented.
+- Copy and duplicate operations write to a hidden sibling first and expose the requested destination only after the staged item is complete. Interrupted partial stages are removed on launch; an already committed copy is retained.
+- Replacement and move operations use identity-checked write-ahead recovery records. On launch, Explorer restores an uncommitted original destination or finishes a committed transfer without guessing from path names alone. Recovery records that cannot be processed safely are retained and reported.
+- After an interrupted cross-volume move, Explorer removes the source only when its filesystem identity and recursive metadata signature still match the completed copy. If the source changed or cannot be verified, the complete destination and source are both preserved for manual review.
+- Recovery protects against an app crash or forced quit, but it is not a full sudden-power-loss durability guarantee: copied data and journal updates are not recursively flushed to stable storage before the source is removed. Identity checks use filesystem metadata rather than a content hash, so deliberately preserving all checked metadata while changing bytes is outside this preview's guarantees.
 - File mutations use `NSFileCoordinator`, but another client can still change or remove an item between separate operations in a batch. Explorer reports the resulting failure rather than silently overwriting.
 - Replacement operations and permanent deletion are intentionally not undoable. Shift-Delete permanently removes selected items after confirmation.
 - A batch can complete partially when a later item fails. The footer reports the result, but there is not yet a persistent operation-details view.

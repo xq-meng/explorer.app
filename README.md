@@ -24,7 +24,7 @@ Before using a preview build for important files, review the current [known issu
 - Copy, cut, paste, rename, duplicate, Trash, and Shift-Delete
 - Conflict handling: replace, keep both, skip, stop, or apply to all
 - Undo and redo for completed file operations
-- Coordinated file mutations and startup recovery for interrupted replacements
+- Staged copies and coordinated startup recovery for interrupted transfers and replacements
 - Cloud-only iCloud items show a cloud badge in the Name column
 
 ## Requirements

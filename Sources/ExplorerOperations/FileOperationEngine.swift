@@ -9,7 +9,13 @@ public protocol FileManagerClient: Sendable {
                          attributes: [FileAttributeKey: Any]?) throws
     func copyItem(at srcURL: URL, to dstURL: URL) throws
     func moveItem(at srcURL: URL, to dstURL: URL) throws
+    func moveItem(
+        at srcURL: URL,
+        to dstURL: URL,
+        onlyIfMatches fingerprint: FileOperationFingerprint
+    ) throws
     func removeItem(at URL: URL) throws
+    func removeItem(at url: URL, onlyIfMatches fingerprint: FileOperationFingerprint) throws
     func trashItem(at url: URL, resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws
     func volumeIdentifier(for url: URL) throws -> String?
     func copyItemWithProgress(
@@ -18,6 +24,7 @@ public protocol FileManagerClient: Sendable {
         onBytesCopied: @escaping @Sendable (Int64) async -> Void
     ) async throws
     func byteCount(of url: URL) -> Int64
+    func fingerprint(of url: URL) throws -> FileOperationFingerprint
 }
 
 public extension FileManagerClient {
@@ -31,6 +38,28 @@ public extension FileManagerClient {
 
     func byteCount(of url: URL) -> Int64 {
         FileByteCounter.allocatedBytes(at: url)
+    }
+
+    func fingerprint(of url: URL) throws -> FileOperationFingerprint {
+        try FileOperationFingerprint.capture(at: url)
+    }
+
+    func removeItem(at url: URL, onlyIfMatches fingerprint: FileOperationFingerprint) throws {
+        guard try self.fingerprint(of: url) == fingerprint else {
+            throw FileOperationError.underlying("The item changed before it could be removed.")
+        }
+        try removeItem(at: url)
+    }
+
+    func moveItem(
+        at srcURL: URL,
+        to dstURL: URL,
+        onlyIfMatches fingerprint: FileOperationFingerprint
+    ) throws {
+        guard try self.fingerprint(of: srcURL) == fingerprint else {
+            throw FileOperationError.underlying("The item changed before it could be moved.")
+        }
+        try moveItem(at: srcURL, to: dstURL)
     }
 }
 
@@ -80,8 +109,33 @@ public struct LocalFileManagerClient: FileManagerClient, @unchecked Sendable {
         }
     }
 
+    public func moveItem(
+        at srcURL: URL,
+        to dstURL: URL,
+        onlyIfMatches fingerprint: FileOperationFingerprint
+    ) throws {
+        try coordinator.coordinateMoving(from: srcURL, to: dstURL) { coordinatedSource, coordinatedDestination in
+            guard try FileOperationFingerprint.capture(
+                at: coordinatedSource,
+                fileManager: manager
+            ) == fingerprint else {
+                throw FileOperationError.underlying("The item changed before it could be moved.")
+            }
+            try manager.moveItem(at: coordinatedSource, to: coordinatedDestination)
+        }
+    }
+
     public func removeItem(at URL: URL) throws {
         try coordinator.coordinateWriting(at: URL, intent: .delete) { coordinatedURL in
+            try manager.removeItem(at: coordinatedURL)
+        }
+    }
+
+    public func removeItem(at url: URL, onlyIfMatches fingerprint: FileOperationFingerprint) throws {
+        try coordinator.coordinateWriting(at: url, intent: .delete) { coordinatedURL in
+            guard try FileOperationFingerprint.capture(at: coordinatedURL, fileManager: manager) == fingerprint else {
+                throw FileOperationError.underlying("The item changed before it could be removed.")
+            }
             try manager.removeItem(at: coordinatedURL)
         }
     }
@@ -116,6 +170,10 @@ public struct LocalFileManagerClient: FileManagerClient, @unchecked Sendable {
 
     public func byteCount(of url: URL) -> Int64 {
         FileByteCounter.allocatedBytes(at: url)
+    }
+
+    public func fingerprint(of url: URL) throws -> FileOperationFingerprint {
+        try FileOperationFingerprint.capture(at: url, fileManager: manager)
     }
 }
 
@@ -209,7 +267,9 @@ public actor FileOperationEngine {
         case let .proceed(url, shouldReplace):
             try checkCancellation()
             do {
-                try await withReplacementBackup(at: requested, enabled: shouldReplace) {
+                if shouldReplace {
+                    try await performStagedFolderCreation(at: url)
+                } else {
                     try fileManager.createDirectory(at: url, withIntermediateDirectories: false, attributes: nil)
                 }
             } catch { throw map(error, at: url) }
@@ -249,7 +309,9 @@ public actor FileOperationEngine {
         case let .proceed(url, shouldReplace):
             try checkCancellation()
             do {
-                try await withReplacementBackup(at: requested, enabled: shouldReplace) {
+                if shouldReplace {
+                    try await performReplacementMove(from: request.source, to: url)
+                } else {
                     try fileManager.moveItem(at: request.source, to: url)
                 }
             } catch { throw map(error, at: url) }
@@ -325,11 +387,37 @@ public actor FileOperationEngine {
                 results.append(.init(source: source, destination: requested, status: .skipped))
             case let .proceed(url, shouldReplace):
                 do {
-                    try await withReplacementBackup(at: requested, enabled: shouldReplace) {
-                        if kind == .copy {
-                            try await copyReportingProgress(
+                    if kind == .copy {
+                        try await performStagedTransfer(
+                            from: source,
+                            to: url,
+                            replacesDestination: shouldReplace,
+                            removesSource: false,
+                            operationID: operationID,
+                            kind: kind,
+                            completedItems: index,
+                            totalItems: request.sources.count,
+                            baseBytes: completedBytes,
+                            totalBytes: totalBytes,
+                            throttler: throttler,
+                            progress: progress
+                        )
+                    } else {
+                        let sourceVolume = try fileManager.volumeIdentifier(for: source)
+                        let destinationVolume = try fileManager.volumeIdentifier(for: request.destination)
+                        if let sourceVolume, sourceVolume == destinationVolume, !shouldReplace {
+                            try fileManager.moveItem(at: source, to: url)
+                        } else if let sourceVolume, sourceVolume == destinationVolume {
+                            try await performReplacementMove(from: source, to: url)
+                        } else {
+                            // Unknown volume identity takes the conservative
+                            // path as well: stage the complete copy before any
+                            // attempt to remove the source.
+                            try await performStagedTransfer(
                                 from: source,
                                 to: url,
+                                replacesDestination: shouldReplace,
+                                removesSource: true,
                                 operationID: operationID,
                                 kind: kind,
                                 completedItems: index,
@@ -339,29 +427,6 @@ public actor FileOperationEngine {
                                 throttler: throttler,
                                 progress: progress
                             )
-                        } else {
-                            let sourceVolume = try fileManager.volumeIdentifier(for: source)
-                            let destinationVolume = try fileManager.volumeIdentifier(for: request.destination)
-                            if sourceVolume != nil && destinationVolume != nil && sourceVolume != destinationVolume {
-                                // A cross-volume move is copy-then-remove.  Never
-                                // remove the source before copy reports success.
-                                try await copyReportingProgress(
-                                    from: source,
-                                    to: url,
-                                    operationID: operationID,
-                                    kind: kind,
-                                    completedItems: index,
-                                    totalItems: request.sources.count,
-                                    baseBytes: completedBytes,
-                                    totalBytes: totalBytes,
-                                    throttler: throttler,
-                                    progress: progress
-                                )
-                                try checkCancellation()
-                                try fileManager.removeItem(at: source)
-                            } else {
-                                try fileManager.moveItem(at: source, to: url)
-                            }
                         }
                     }
                 } catch {
@@ -425,20 +490,20 @@ public actor FileOperationEngine {
         case let .proceed(url, shouldReplace):
             try checkCancellation()
             do {
-                try await withReplacementBackup(at: requested, enabled: shouldReplace) {
-                    try await copyReportingProgress(
-                        from: request.source,
-                        to: url,
-                        operationID: operationID,
-                        kind: .duplicate,
-                        completedItems: 0,
-                        totalItems: 1,
-                        baseBytes: 0,
-                        totalBytes: totalBytes,
-                        throttler: throttler,
-                        progress: progress
-                    )
-                }
+                try await performStagedTransfer(
+                    from: request.source,
+                    to: url,
+                    replacesDestination: shouldReplace,
+                    removesSource: false,
+                    operationID: operationID,
+                    kind: .duplicate,
+                    completedItems: 0,
+                    totalItems: 1,
+                    baseBytes: 0,
+                    totalBytes: totalBytes,
+                    throttler: throttler,
+                    progress: progress
+                )
             } catch { throw map(error, at: url) }
             await report(
                 progress,
@@ -604,48 +669,357 @@ public actor FileOperationEngine {
         return url.deletingLastPathComponent().appendingPathComponent(name)
     }
 
-    /// Replaces a destination without making the old item unrecoverable if the
-    /// new operation fails. The backup lives beside the destination, therefore
-    /// this also works for a cross-volume source move.
-    private func withReplacementBackup(at destination: URL, enabled: Bool,
-                                       operation: () async throws -> Void) async throws {
-        guard enabled else {
-            try await operation()
-            return
-        }
-        let backup = destination.deletingLastPathComponent()
-            .appendingPathComponent(".explorer-replace-\(UUID().uuidString)")
-        let recoveryID = try await recoveryJournal.begin(destination: destination, backup: backup)
-        var replacementCompleted = false
+    /// Replaces an existing destination with an atomic same-volume move while
+    /// recording enough identity information to distinguish a committed move
+    /// from one interrupted before the source changed location.
+    private func performReplacementMove(from source: URL, to destination: URL) async throws {
+        let parent = destination.deletingLastPathComponent()
+        let transactionID = UUID()
+        let backup = parent.appendingPathComponent(".explorer-replace-\(transactionID.uuidString)")
+        let sourceFingerprint = try fileManager.fingerprint(of: source)
+        let originalDestinationFingerprint = try fileManager.fingerprint(of: destination)
+        let recoveryID = try await recoveryJournal.beginReplacementMove(
+            id: transactionID,
+            source: source,
+            destination: destination,
+            backup: backup,
+            sourceFingerprint: sourceFingerprint,
+            originalDestinationFingerprint: originalDestinationFingerprint
+        )
+        var moveCommitted = false
         do {
-            try fileManager.moveItem(at: destination, to: backup)
+            try fileManager.moveItem(
+                at: destination,
+                to: backup,
+                onlyIfMatches: originalDestinationFingerprint
+            )
             try await recoveryJournal.markBackupCreated(recoveryID)
-            try await operation()
+            try checkCancellation()
+            guard try fileManager.fingerprint(of: source) == sourceFingerprint else {
+                throw FileOperationError.underlying(
+                    "The move source changed while the replacement was being prepared."
+                )
+            }
+            try await recoveryJournal.markSourceMovePrepared(recoveryID)
+            try fileManager.moveItem(
+                at: source,
+                to: destination,
+                onlyIfMatches: sourceFingerprint
+            )
+            moveCommitted = true
             try await recoveryJournal.markReplacementCompleted(recoveryID)
-            replacementCompleted = true
-            // Once this phase is journaled, recovery preserves the replacement
-            // and only finishes removal of the old backup.
-            try fileManager.removeItem(at: backup)
+            if fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
+                try fileManager.removeItem(at: backup, onlyIfMatches: originalDestinationFingerprint)
+            }
             try await recoveryJournal.finish(recoveryID)
         } catch {
-            if !replacementCompleted {
-                // Best effort cleanup of a partial result, followed by
-                // restoration of the old destination. If either step fails,
-                // retain the journal so startup recovery can retry it.
-                if fileManager.fileExists(atPath: destination.path, isDirectory: nil) {
-                    try? fileManager.removeItem(at: destination)
+            if !fileManager.fileExists(atPath: source.path, isDirectory: nil),
+               destinationMatches(sourceFingerprint, at: destination) {
+                try? await recoveryJournal.markReplacementCompleted(recoveryID)
+                if destinationMatches(originalDestinationFingerprint, at: backup) {
+                    try? fileManager.removeItem(at: backup, onlyIfMatches: originalDestinationFingerprint)
                 }
-                if fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
-                    try? fileManager.moveItem(at: backup, to: destination)
-                }
-                if fileManager.fileExists(atPath: destination.path, isDirectory: nil),
-                   !fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
-                    try? await recoveryJournal.markRollbackCompleted(recoveryID)
+                if !fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
                     try? await recoveryJournal.finish(recoveryID)
                 }
+                return
+            }
+            if moveCommitted {
+                throw error
+            }
+
+            var rolledBack = true
+            if fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
+                guard destinationMatches(originalDestinationFingerprint, at: backup),
+                      !fileManager.fileExists(atPath: destination.path, isDirectory: nil) else {
+                    throw error
+                }
+                do {
+                    try fileManager.moveItem(
+                        at: backup,
+                        to: destination,
+                        onlyIfMatches: originalDestinationFingerprint
+                    )
+                }
+                catch { rolledBack = false }
+            }
+            if rolledBack {
+                try? await recoveryJournal.markRollbackCompleted(recoveryID)
+                try? await recoveryJournal.finish(recoveryID)
             }
             throw error
         }
+    }
+
+    private func performStagedFolderCreation(at destination: URL) async throws {
+        let parent = destination.deletingLastPathComponent()
+        let transactionID = UUID()
+        let staging = parent.appendingPathComponent(".explorer-stage-\(transactionID.uuidString)")
+        let backup = parent.appendingPathComponent(".explorer-replace-\(transactionID.uuidString)")
+        let originalDestinationFingerprint = try fileManager.fingerprint(of: destination)
+        let recoveryID = try await recoveryJournal.beginStagedTransfer(
+            id: transactionID,
+            source: staging,
+            destination: destination,
+            staging: staging,
+            backup: backup,
+            originalDestinationFingerprint: originalDestinationFingerprint,
+            removesSource: false
+        )
+        var stagingFingerprint: FileOperationFingerprint?
+        var destinationWasCommitted = false
+        var semanticOperationCompleted = false
+        do {
+            try fileManager.createDirectory(
+                at: staging,
+                withIntermediateDirectories: false,
+                attributes: nil
+            )
+            let createdFingerprint = try fileManager.fingerprint(of: staging)
+            stagingFingerprint = createdFingerprint
+            try await recoveryJournal.markStagedCopyCompleted(
+                recoveryID,
+                sourceFingerprint: createdFingerprint,
+                stagingFingerprint: createdFingerprint
+            )
+            try checkCancellation()
+            try fileManager.moveItem(
+                at: destination,
+                to: backup,
+                onlyIfMatches: originalDestinationFingerprint
+            )
+            try await recoveryJournal.markBackupCreated(recoveryID)
+            try fileManager.moveItem(
+                at: staging,
+                to: destination,
+                onlyIfMatches: createdFingerprint
+            )
+            destinationWasCommitted = true
+            try await recoveryJournal.markDestinationCommitted(recoveryID)
+            semanticOperationCompleted = true
+            try fileManager.removeItem(at: backup, onlyIfMatches: originalDestinationFingerprint)
+            try await recoveryJournal.finish(recoveryID)
+        } catch {
+            if semanticOperationCompleted { return }
+            let rolledBack = rollbackStagedTransfer(
+                destination: destination,
+                staging: staging,
+                backup: backup,
+                originalDestinationFingerprint: originalDestinationFingerprint,
+                stagingFingerprint: stagingFingerprint,
+                destinationWasCommitted: destinationWasCommitted
+            )
+            if rolledBack { try? await recoveryJournal.finish(recoveryID) }
+            throw error
+        }
+    }
+
+    /// Copies into a hidden sibling first, then commits that complete item with
+    /// a same-volume rename. The recovery record is written before any file
+    /// mutation so a process interruption can never expose a partial item at
+    /// the user's requested destination.
+    private func performStagedTransfer(
+        from source: URL,
+        to destination: URL,
+        replacesDestination: Bool,
+        removesSource: Bool,
+        operationID: UUID,
+        kind: FileOperationKind,
+        completedItems: Int,
+        totalItems: Int,
+        baseBytes: Int64,
+        totalBytes: Int64,
+        throttler: ProgressThrottler,
+        progress: (@Sendable (FileOperationProgress) async -> Void)?
+    ) async throws {
+        let parent = destination.deletingLastPathComponent()
+        let transactionID = UUID()
+        let staging = parent.appendingPathComponent(".explorer-stage-\(transactionID.uuidString)")
+        let backup = replacesDestination
+            ? parent.appendingPathComponent(".explorer-replace-\(transactionID.uuidString)")
+            : nil
+        let sourceFingerprintBeforeCopy = try fileManager.fingerprint(of: source)
+        let originalDestinationFingerprint = try backup.map { _ in
+            try fileManager.fingerprint(of: destination)
+        }
+        let recoveryID = try await recoveryJournal.beginStagedTransfer(
+            id: transactionID,
+            source: source,
+            destination: destination,
+            staging: staging,
+            backup: backup,
+            originalDestinationFingerprint: originalDestinationFingerprint,
+            removesSource: removesSource
+        )
+
+        var stagingFingerprint: FileOperationFingerprint?
+        var destinationWasCommitted = false
+        var semanticOperationCompleted = false
+        do {
+            try await copyReportingProgress(
+                from: source,
+                to: staging,
+                operationID: operationID,
+                kind: kind,
+                completedItems: completedItems,
+                totalItems: totalItems,
+                baseBytes: baseBytes,
+                totalBytes: totalBytes,
+                throttler: throttler,
+                progress: progress
+            )
+            let capturedSource = try fileManager.fingerprint(of: source)
+            guard capturedSource == sourceFingerprintBeforeCopy else {
+                throw FileOperationError.underlying(
+                    "The source changed while it was being copied; the incomplete transfer was discarded."
+                )
+            }
+            let capturedStaging = try fileManager.fingerprint(of: staging)
+            stagingFingerprint = capturedStaging
+            try await recoveryJournal.markStagedCopyCompleted(
+                recoveryID,
+                sourceFingerprint: capturedSource,
+                stagingFingerprint: capturedStaging
+            )
+            try checkCancellation()
+
+            if let backup, let expectedDestination = originalDestinationFingerprint {
+                guard try fileManager.fingerprint(of: destination) == expectedDestination else {
+                    throw FileOperationError.underlying(
+                        "The destination changed while the copy was being prepared."
+                    )
+                }
+                try fileManager.moveItem(
+                    at: destination,
+                    to: backup,
+                    onlyIfMatches: expectedDestination
+                )
+                try await recoveryJournal.markBackupCreated(recoveryID)
+            }
+
+            try fileManager.moveItem(
+                at: staging,
+                to: destination,
+                onlyIfMatches: capturedStaging
+            )
+            destinationWasCommitted = true
+            try await recoveryJournal.markDestinationCommitted(recoveryID)
+
+            if removesSource {
+                try checkCancellation()
+                guard try fileManager.fingerprint(of: source) == capturedSource else {
+                    throw FileOperationError.underlying(
+                        "The move source changed while it was being copied; the source was preserved."
+                    )
+                }
+                try await recoveryJournal.markSourceDeletionPrepared(recoveryID)
+                try fileManager.removeItem(at: source, onlyIfMatches: capturedSource)
+                semanticOperationCompleted = true
+                try await recoveryJournal.markSourceRemoved(recoveryID)
+            } else {
+                semanticOperationCompleted = true
+            }
+
+            if let backup,
+               let originalDestinationFingerprint,
+               fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
+                try fileManager.removeItem(
+                    at: backup,
+                    onlyIfMatches: originalDestinationFingerprint
+                )
+            }
+            try await recoveryJournal.finish(recoveryID)
+        } catch {
+            // If the source deletion succeeded but its journal update failed,
+            // the requested move is already complete. Preserve the destination
+            // and leave any remaining journal work for startup recovery.
+            if removesSource,
+               !fileManager.fileExists(atPath: source.path, isDirectory: nil),
+               destinationMatches(stagingFingerprint, at: destination) {
+                try? await recoveryJournal.markSourceRemoved(recoveryID)
+                if let backup, fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
+                    if let originalDestinationFingerprint {
+                        try? fileManager.removeItem(
+                            at: backup,
+                            onlyIfMatches: originalDestinationFingerprint
+                        )
+                    }
+                }
+                if backup.map({ fileManager.fileExists(atPath: $0.path, isDirectory: nil) }) != true {
+                    try? await recoveryJournal.finish(recoveryID)
+                }
+                return
+            }
+            if semanticOperationCompleted {
+                return
+            }
+
+            let rolledBack = rollbackStagedTransfer(
+                destination: destination,
+                staging: staging,
+                backup: backup,
+                originalDestinationFingerprint: originalDestinationFingerprint,
+                stagingFingerprint: stagingFingerprint,
+                destinationWasCommitted: destinationWasCommitted
+            )
+            if rolledBack {
+                try? await recoveryJournal.finish(recoveryID)
+            }
+            throw error
+        }
+    }
+
+    private func rollbackStagedTransfer(
+        destination: URL,
+        staging: URL,
+        backup: URL?,
+        originalDestinationFingerprint: FileOperationFingerprint?,
+        stagingFingerprint: FileOperationFingerprint?,
+        destinationWasCommitted: Bool
+    ) -> Bool {
+        var succeeded = true
+        let committedItemExists = destinationWasCommitted
+            || (!fileManager.fileExists(atPath: staging.path, isDirectory: nil)
+                && destinationMatches(stagingFingerprint, at: destination))
+        if committedItemExists,
+           fileManager.fileExists(atPath: destination.path, isDirectory: nil) {
+            guard let stagingFingerprint,
+                  destinationMatches(stagingFingerprint, at: destination) else { return false }
+            do { try fileManager.removeItem(at: destination, onlyIfMatches: stagingFingerprint) }
+            catch { succeeded = false }
+        }
+        if fileManager.fileExists(atPath: staging.path, isDirectory: nil) {
+            do { try fileManager.removeItem(at: staging) }
+            catch { succeeded = false }
+        }
+        if let backup, fileManager.fileExists(atPath: backup.path, isDirectory: nil) {
+            guard destinationMatches(originalDestinationFingerprint, at: backup),
+                  !fileManager.fileExists(atPath: destination.path, isDirectory: nil) else {
+                return false
+            }
+            guard let originalDestinationFingerprint else { return false }
+            do {
+                try fileManager.moveItem(
+                    at: backup,
+                    to: destination,
+                    onlyIfMatches: originalDestinationFingerprint
+                )
+            }
+            catch { succeeded = false }
+        } else if backup != nil,
+                  !destinationMatches(originalDestinationFingerprint, at: destination) {
+            succeeded = false
+        }
+        return succeeded
+    }
+
+    private func destinationMatches(
+        _ fingerprint: FileOperationFingerprint?,
+        at url: URL
+    ) -> Bool {
+        guard let fingerprint,
+              fileManager.fileExists(atPath: url.path, isDirectory: nil) else { return false }
+        return (try? fileManager.fingerprint(of: url)) == fingerprint
     }
 
     private func copyReportingProgress(

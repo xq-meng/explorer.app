@@ -29,6 +29,102 @@ final class FileCoordinationTests: XCTestCase {
             .write(moved, .delete),
         ])
     }
+
+    func testConditionalMoveRevalidatesIdentityInsideCoordination() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExplorerConditionalMove-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("destination.txt")
+        let backup = root.appendingPathComponent("backup.txt")
+        try Data("original".utf8).write(to: source)
+        let fingerprint = try FileOperationFingerprint.capture(at: source)
+        let coordinator = ReplacingMoveSourceCoordinator(replacement: Data("external".utf8))
+        let client = LocalFileManagerClient(fileManager: .default, coordinator: coordinator)
+
+        XCTAssertThrowsError(
+            try client.moveItem(at: source, to: backup, onlyIfMatches: fingerprint)
+        )
+        XCTAssertEqual(try String(contentsOf: source), "external")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    func testConditionalRemoveRevalidatesIdentityInsideCoordination() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExplorerConditionalRemove-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.txt")
+        try Data("original".utf8).write(to: source)
+        let fingerprint = try FileOperationFingerprint.capture(at: source)
+        let coordinator = ReplacingWriteSourceCoordinator(replacement: Data("external".utf8))
+        let client = LocalFileManagerClient(fileManager: .default, coordinator: coordinator)
+
+        XCTAssertThrowsError(try client.removeItem(at: source, onlyIfMatches: fingerprint))
+        XCTAssertEqual(try String(contentsOf: source), "external")
+    }
+}
+
+private struct ReplacingMoveSourceCoordinator: FileCoordinationClient, Sendable {
+    let replacement: Data
+
+    func coordinateWriting(
+        at url: URL,
+        intent: CoordinatedWriteIntent,
+        accessor: (URL) throws -> Void
+    ) throws {
+        try accessor(url)
+    }
+
+    func coordinateReading(
+        at source: URL,
+        writingAt destination: URL,
+        destinationIntent: CoordinatedWriteIntent,
+        accessor: (URL, URL) throws -> Void
+    ) throws {
+        try accessor(source, destination)
+    }
+
+    func coordinateMoving(
+        from source: URL,
+        to destination: URL,
+        accessor: (URL, URL) throws -> Void
+    ) throws {
+        try FileManager.default.removeItem(at: source)
+        try replacement.write(to: source)
+        try accessor(source, destination)
+    }
+}
+
+private struct ReplacingWriteSourceCoordinator: FileCoordinationClient, Sendable {
+    let replacement: Data
+
+    func coordinateWriting(
+        at url: URL,
+        intent: CoordinatedWriteIntent,
+        accessor: (URL) throws -> Void
+    ) throws {
+        try FileManager.default.removeItem(at: url)
+        try replacement.write(to: url)
+        try accessor(url)
+    }
+
+    func coordinateReading(
+        at source: URL,
+        writingAt destination: URL,
+        destinationIntent: CoordinatedWriteIntent,
+        accessor: (URL, URL) throws -> Void
+    ) throws {
+        try accessor(source, destination)
+    }
+
+    func coordinateMoving(
+        from source: URL,
+        to destination: URL,
+        accessor: (URL, URL) throws -> Void
+    ) throws {
+        try accessor(source, destination)
+    }
 }
 
 private final class RecordingFileCoordinator: FileCoordinationClient, @unchecked Sendable {
