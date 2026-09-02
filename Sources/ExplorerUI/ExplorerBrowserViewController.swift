@@ -24,8 +24,8 @@ public final class ExplorerBrowserViewController: NSViewController {
     private let activePaneIndicator = NSView()
     private lazy var homePageController: BrowserHomePageController = {
         let controller = BrowserHomePageController()
-        controller.onOpenLocation = { [weak self] url in
-            _ = self?.emit(.openLocation(.directory(url)))
+        controller.onAction = { [weak self] action in
+            _ = self?.emit(action)
         }
         return controller
     }()
@@ -668,6 +668,7 @@ extension ExplorerBrowserViewController: NSSplitViewDelegate {
 
     private func applyViewState() {
         sidebarController.viewState = viewState
+        homePageController.viewState = viewState
         fileContentController.viewState = viewState
     }
 

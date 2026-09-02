@@ -28,6 +28,7 @@ Run this checklist for every preview release. Perform destructive checks only in
 
 - [ ] Launching normally opens My Computer without an empty or white content area.
 - [ ] My Computer shows Favorites, mounted volumes, capacity information, and available network locations.
+- [ ] Favorites, volumes, and network tiles on My Computer support the same location context menu as the sidebar and route actions to the active pane.
 - [ ] Sidebar shortcuts open their locations without expanding as a directory tree.
 - [ ] The window has one shared sidebar outside the pane split; its shortcuts navigate only the active pane.
 - [ ] Back, Forward, Up, Refresh, breadcrumbs, and Command-L path entry navigate correctly.

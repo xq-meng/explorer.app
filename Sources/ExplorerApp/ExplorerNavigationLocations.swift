@@ -54,7 +54,13 @@ enum ExplorerNavigationLocationBuilder {
 
         let favoriteItems = (standard + custom).compactMap { location -> BrowserHomePageItem? in
             guard location.kind == .favorite, let url = location.directoryURL else { return nil }
-            return BrowserHomePageItem(title: location.title, url: url, subtitle: url.path)
+            return BrowserHomePageItem(
+                title: location.title,
+                url: url,
+                subtitle: url.path,
+                kind: location.kind,
+                isRemovable: location.isRemovable
+            )
         }
         let volumeItems = mountedVolumes.compactMap { volume -> BrowserHomePageVolume? in
             guard volume.url.standardizedFileURL != homeURL else { return nil }
@@ -67,7 +73,13 @@ enum ExplorerNavigationLocationBuilder {
         }
         let networkItems = network.compactMap { location -> BrowserHomePageItem? in
             guard let url = location.directoryURL else { return nil }
-            return BrowserHomePageItem(title: location.title, url: url, subtitle: url.path)
+            return BrowserHomePageItem(
+                title: location.title,
+                url: url,
+                subtitle: url.path,
+                kind: location.kind,
+                isRemovable: location.isRemovable
+            )
         }
 
         return ExplorerNavigationLocations(

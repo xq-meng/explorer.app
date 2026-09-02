@@ -944,6 +944,79 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         XCTAssertEqual(viewModeControl?.isHidden, false)
     }
 
+    func testHomeFolderAndVolumeTilesUseUnifiedLocationMenus() throws {
+        let controller = ExplorerBrowserViewController()
+        controller.loadView()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1_080, height: 680)
+        let downloads = URL(fileURLWithPath: "/tmp/Downloads", isDirectory: true)
+        let volume = URL(fileURLWithPath: "/Volumes/Archive", isDirectory: true)
+        controller.viewState = BrowserViewState(occupiedDirectoryURLs: [downloads, volume])
+        controller.displayHomePage(BrowserHomePageModel(
+            favorites: [
+                BrowserHomePageItem(
+                    title: "Downloads",
+                    url: downloads,
+                    subtitle: downloads.path,
+                    kind: .favorite,
+                    isRemovable: true
+                ),
+            ],
+            volumes: [BrowserHomePageVolume(title: "Archive", url: volume)]
+        ))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let tiles = allDescendants(of: controller.view, as: BrowserHomeItemView.self)
+        let folderTile = try XCTUnwrap(
+            tiles.first { $0.accessibilityLabel()?.hasPrefix("Downloads.") == true }
+        )
+        let volumeTile = try XCTUnwrap(
+            tiles.first { $0.accessibilityLabel()?.hasPrefix("Archive.") == true }
+        )
+        let folderMenu = try XCTUnwrap(folderTile.menu(for: mouseDownEvent(clickCount: 1)))
+        let volumeMenu = try XCTUnwrap(volumeTile.menu(for: mouseDownEvent(clickCount: 1)))
+        let visibleTitles: (NSMenu) -> [String] = { menu in
+            menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+        }
+
+        XCTAssertEqual(visibleTitles(folderMenu), [
+            "Open",
+            "Open in New Tab",
+            "Show in Finder",
+            "Copy Path",
+            "New Folder",
+            "Remove from Favorites",
+        ])
+        XCTAssertEqual(visibleTitles(volumeMenu), [
+            "Open",
+            "Open in New Tab",
+            "Show in Finder",
+            "Copy Path",
+            "New Folder",
+        ])
+        XCTAssertFalse(folderTile.isSelected)
+        XCTAssertTrue(volumeTile.isSelected)
+
+        var openedInNewTab: BrowserLocation?
+        var copiedPath: URL?
+        controller.onAction = { action in
+            switch action {
+            case let .openLocationInNewTab(location): openedInNewTab = location
+            case let .copyPath(url): copiedPath = url
+            default: break
+            }
+            return true
+        }
+        if let index = folderMenu.items.firstIndex(where: { $0.title == "Open in New Tab" }) {
+            folderMenu.performActionForItem(at: index)
+        }
+        if let index = volumeMenu.items.firstIndex(where: { $0.title == "Copy Path" }) {
+            volumeMenu.performActionForItem(at: index)
+        }
+
+        XCTAssertEqual(openedInNewTab, .directory(downloads))
+        XCTAssertEqual(copiedPath, volume.standardizedFileURL)
+    }
+
     func testVolumeCapacityCaptionUsesFreeSpaceAndUsedFraction() {
         XCTAssertEqual(
             BrowserVolumeCapacity.usedFraction(available: 25, total: 100) ?? -1,

@@ -3,7 +3,8 @@ import AppKit
 /// The My Computer overview: favorites, volumes with free space, and network locations.
 @MainActor
 final class BrowserHomePageController: NSViewController {
-    var onOpenLocation: ((URL) -> Void)?
+    var onAction: ((BrowserAction) -> Void)?
+    var viewState = BrowserViewState.empty
 
     private let scrollView = NSScrollView()
     private let documentView = BrowserHomeDocumentView()
@@ -183,7 +184,12 @@ final class BrowserHomePageController: NSViewController {
             content: labels,
             title: item.title,
             subtitle: item.subtitle,
-            url: item.url
+            location: BrowserSidebarLocation(
+                title: item.title,
+                url: item.url,
+                kind: item.kind,
+                isRemovable: item.isRemovable
+            )
         )
     }
 
@@ -243,7 +249,11 @@ final class BrowserHomePageController: NSViewController {
             content: labels,
             title: volume.title,
             subtitle: volume.caption ?? volume.url.path,
-            url: volume.url
+            location: BrowserSidebarLocation(
+                title: volume.title,
+                url: volume.url,
+                kind: .volume
+            )
         )
     }
 
@@ -252,15 +262,18 @@ final class BrowserHomePageController: NSViewController {
         content: NSView,
         title: String,
         subtitle: String,
-        url: URL
+        location: BrowserSidebarLocation
     ) -> BrowserHomeItemView {
         let tile = BrowserHomeItemView()
         tile.identifier = NSUserInterfaceItemIdentifier("home.item")
         tile.setAccessibilityLabel("\(title). \(subtitle)")
-        tile.onOpen = { [weak self] in self?.onOpenLocation?(url) }
+        tile.onOpen = { [weak self] in self?.onAction?(.openLocation(location.location)) }
         tile.onSelect = { [weak self, weak tile] in
             guard let tile else { return }
             self?.selectHomeTile(tile)
+        }
+        tile.onContextMenu = { [weak self] in
+            self?.makeContextMenu(for: location)
         }
 
         let row = NSStackView(views: [icon, content])
@@ -278,6 +291,26 @@ final class BrowserHomePageController: NSViewController {
             row.bottomAnchor.constraint(equalTo: tile.bottomAnchor),
         ])
         return tile
+    }
+
+    private func makeContextMenu(for location: BrowserSidebarLocation) -> NSMenu {
+        let menu = NSMenu(title: "Location")
+        menu.autoenablesItems = false
+        BrowserLocationContextMenuBuilder.rebuild(
+            menu,
+            for: location,
+            viewState: viewState,
+            target: self,
+            action: #selector(performContextMenuAction(_:))
+        )
+        return menu
+    }
+
+    @objc private func performContextMenuAction(_ sender: NSMenuItem) {
+        guard let action = (sender.representedObject as? BrowserLocationContextMenuActionBox)?.action else {
+            return
+        }
+        onAction?(action)
     }
 
     private func icon(for url: URL, fallback: String) -> NSImage {
@@ -418,6 +451,7 @@ private final class BrowserHomeTileGrid: NSView {
 final class BrowserHomeItemView: NSView {
     var onOpen: (() -> Void)?
     var onSelect: (() -> Void)?
+    var onContextMenu: (() -> NSMenu?)?
     var isSelected = false {
         didSet { needsDisplay = true }
     }
@@ -476,6 +510,11 @@ final class BrowserHomeItemView: NSView {
         DispatchQueue.main.async {
             handler?()
         }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        onSelect?()
+        return onContextMenu?()
     }
 
     override func keyDown(with event: NSEvent) {

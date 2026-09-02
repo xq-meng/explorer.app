@@ -108,11 +108,21 @@ public struct BrowserHomePageItem: Sendable, Equatable {
     public let title: String
     public let url: URL
     public let subtitle: String
+    public let kind: BrowserSidebarLocationKind
+    public let isRemovable: Bool
 
-    public init(title: String, url: URL, subtitle: String) {
+    public init(
+        title: String,
+        url: URL,
+        subtitle: String,
+        kind: BrowserSidebarLocationKind = .folder,
+        isRemovable: Bool = false
+    ) {
         self.title = title
         self.url = url.standardizedFileURL
         self.subtitle = subtitle
+        self.kind = kind
+        self.isRemovable = isRemovable
     }
 }
 
