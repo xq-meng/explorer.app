@@ -11,6 +11,11 @@ struct NavigationHistory<Location: Equatable> {
     private(set) var back: [Location] = []
     private(set) var forward: [Location] = []
 
+    init(back: [Location] = [], forward: [Location] = []) {
+        self.back = back
+        self.forward = forward
+    }
+
     var previous: Location? { back.last }
     var next: Location? { forward.last }
 

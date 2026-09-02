@@ -111,8 +111,11 @@ final class BrowserSidebarController: NSObject, NSOutlineViewDataSource, NSOutli
         }
     }
 
-    func select(_ location: BrowserLocation) {
-        guard let node = findNode(location) else { return }
+    func select(_ location: BrowserLocation?) {
+        guard let location, let node = findNode(location) else {
+            outlineView.deselectAll(nil)
+            return
+        }
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return }
         let action = outlineView.action

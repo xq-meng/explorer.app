@@ -8,6 +8,7 @@ import AppKit
 public final class ExplorerBrowserViewController: NSViewController {
     /// Single event outlet. The return value is used only for drop actions.
     public var onAction: ((BrowserAction) -> Bool)?
+    public var onActivate: (() -> Void)?
     public var viewState = BrowserViewState.empty {
         didSet { applyViewState() }
     }
@@ -15,10 +16,12 @@ public final class ExplorerBrowserViewController: NSViewController {
     private let breadcrumbBar = BrowserBreadcrumbBar()
     private let searchField = NSSearchField()
     private let viewModeControl = NSSegmentedControl()
+    private let dualPaneButton = BrowserToolbarButton()
     private let statusLabel = NSTextField(labelWithString: "Ready")
     private let statusSummaryLabel = NSTextField(labelWithString: "0 items")
     private let sidebarController = BrowserSidebarController()
     private let previewView = BrowserPreviewView()
+    private let activePaneIndicator = NSView()
     private lazy var homePageController: BrowserHomePageController = {
         let controller = BrowserHomePageController()
         controller.onOpenLocation = { [weak self] url in
@@ -35,10 +38,12 @@ public final class ExplorerBrowserViewController: NSViewController {
         controller.onSelectionPresentationChange = { [weak self] rows in
             self?.displaySelection(rows)
         }
+        controller.onActivate = { [weak self] in self?.onActivate?() }
         return controller
     }()
     private weak var splitView: NSSplitView?
     private weak var contentSplitView: NSSplitView?
+    private var sidebarView: NSView?
     private var requestedSidebarWidth: CGFloat = SidebarLayout.defaultWidth
     private var sidebarWidthUpdateGeneration = 0
     private var canReportSidebarWidth = false
@@ -48,6 +53,15 @@ public final class ExplorerBrowserViewController: NSViewController {
 
     public private(set) var viewMode: BrowserViewMode = .details
     public private(set) var isPreviewVisible = true
+    public private(set) var isSidebarVisible: Bool
+    public private(set) var isPaneActive = false
+
+    public init(showsSidebar: Bool = true) {
+        isSidebarVisible = showsSidebar
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
 
     public override func loadView() {
         view = NSView()
@@ -55,11 +69,23 @@ public final class ExplorerBrowserViewController: NSViewController {
         view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         let splitView = makeSplitView()
         view.addSubview(splitView)
+        activePaneIndicator.translatesAutoresizingMaskIntoConstraints = false
+        activePaneIndicator.wantsLayer = true
+        activePaneIndicator.layer?.backgroundColor = NSColor.controlAccentColor
+            .withAlphaComponent(0.65)
+            .cgColor
+        activePaneIndicator.layer?.cornerRadius = 1
+        activePaneIndicator.isHidden = true
+        view.addSubview(activePaneIndicator)
         NSLayoutConstraint.activate([
             splitView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             splitView.topAnchor.constraint(equalTo: view.topAnchor),
             splitView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            activePaneIndicator.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            activePaneIndicator.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            activePaneIndicator.topAnchor.constraint(equalTo: view.topAnchor, constant: 2),
+            activePaneIndicator.heightAnchor.constraint(equalToConstant: 2),
         ])
     }
 
@@ -208,6 +234,59 @@ public final class ExplorerBrowserViewController: NSViewController {
         sidebarController.displayRoots(locations)
     }
 
+    public func setSidebarVisible(_ isVisible: Bool) {
+        guard isSidebarVisible != isVisible else { return }
+        isSidebarVisible = isVisible
+        loadViewIfNeeded()
+        guard let splitView else { return }
+        if isVisible {
+            let sidebarView = self.sidebarView ?? makeSidebar()
+            self.sidebarView = sidebarView
+            guard sidebarView.superview !== splitView else { return }
+            splitView.insertArrangedSubview(sidebarView, at: 0)
+            setSidebarWidth(requestedSidebarWidth)
+        } else {
+            guard let sidebarView else { return }
+            guard sidebarView.superview === splitView else { return }
+            canReportSidebarWidth = false
+            splitView.removeArrangedSubview(sidebarView)
+            sidebarView.removeFromSuperview()
+            splitView.adjustSubviews()
+        }
+    }
+
+    public func setPaneActive(_ isActive: Bool, showsIndicator: Bool) {
+        loadViewIfNeeded()
+        isPaneActive = isActive
+        view.layer?.borderWidth = 0
+        activePaneIndicator.isHidden = !showsIndicator || !isActive
+        view.setAccessibilityLabel(isActive ? "Active file pane" : "File pane")
+    }
+
+    /// Updates the split-view control without coupling the browser chrome to
+    /// the window's pane-session ownership.
+    public func setDualPaneActive(_ isActive: Bool) {
+        let title = isActive ? "Close Split View" : "Show Split View"
+        dualPaneButton.toolTip = "\(title) (Command-\\)"
+        dualPaneButton.setAccessibilityLabel(title)
+    }
+
+    public func focusFileContent() {
+        fileContentController.focusContent()
+    }
+
+    public func selectFileURLs(_ urls: Set<URL>) {
+        fileContentController.setSelection(urls)
+    }
+
+    public func fileContentScrollPosition() -> BrowserScrollPosition? {
+        fileContentController.scrollPosition()
+    }
+
+    public func restoreFileContentScrollPosition(_ position: BrowserScrollPosition) {
+        fileContentController.restoreScrollPosition(position)
+    }
+
     private func displaySelection(_ rows: [BrowserFileRow]) {
         previewView.display(rows)
         var components: [String] = []
@@ -250,11 +329,17 @@ public final class ExplorerBrowserViewController: NSViewController {
         splitView.translatesAutoresizingMaskIntoConstraints = false
         splitView.isVertical = true
         splitView.dividerStyle = .thin
-        splitView.addArrangedSubview(makeSidebar())
+        if isSidebarVisible {
+            let sidebar = makeSidebar()
+            sidebarView = sidebar
+            splitView.addArrangedSubview(sidebar)
+        }
         splitView.addArrangedSubview(makeContentArea())
         splitView.delegate = self
         self.splitView = splitView
-        setSidebarWidth(requestedSidebarWidth)
+        if isSidebarVisible {
+            setSidebarWidth(requestedSidebarWidth)
+        }
         return splitView
     }
 
@@ -297,6 +382,7 @@ public final class ExplorerBrowserViewController: NSViewController {
         }
         configureSearchField()
         configureViewModeControl()
+        configureDualPaneButton()
         configureStatusLabels()
 
         if fileContentController.parent !== self {
@@ -355,12 +441,25 @@ public final class ExplorerBrowserViewController: NSViewController {
         navigation.alignment = .centerY
         navigation.spacing = 1
 
-        let topRow = NSStackView(views: [navigation, breadcrumbBar, searchField, viewModeControl])
+        let topRow = NSStackView(views: [
+            navigation,
+            breadcrumbBar,
+            searchField,
+            viewModeControl,
+            dualPaneButton,
+        ])
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
         topRow.distribution = .fill
         topRow.spacing = 8
         topRow.edgeInsets = NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
+
+        let breadcrumbPreferredWidth = breadcrumbBar.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: ToolbarLayout.preferredBreadcrumbWidth
+        )
+        breadcrumbPreferredWidth.priority = NSLayoutConstraint.Priority(
+            rawValue: NSLayoutConstraint.Priority.defaultHigh.rawValue + 1
+        )
 
         let statusRow = NSStackView(views: [statusLabel, statusSummaryLabel])
         statusRow.orientation = .horizontal
@@ -386,7 +485,10 @@ public final class ExplorerBrowserViewController: NSViewController {
             browserSplitView.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
             statusRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusRow.heightAnchor.constraint(equalToConstant: 24),
-            breadcrumbBar.widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
+            breadcrumbBar.widthAnchor.constraint(
+                greaterThanOrEqualToConstant: ToolbarLayout.minimumBreadcrumbWidth
+            ),
+            breadcrumbPreferredWidth,
             statusLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
             statusSummaryLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
         ])
@@ -401,7 +503,20 @@ public final class ExplorerBrowserViewController: NSViewController {
         searchField.setAccessibilityLabel("Search this folder")
         searchField.setAccessibilityHelp("Searches the current folder and its subfolders by name.")
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+        searchField.setContentCompressionResistancePriority(
+            NSLayoutConstraint.Priority(rawValue: NSLayoutConstraint.Priority.defaultLow.rawValue - 1),
+            for: .horizontal
+        )
+        let preferredWidth = searchField.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: ToolbarLayout.preferredSearchWidth
+        )
+        preferredWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            searchField.widthAnchor.constraint(
+                greaterThanOrEqualToConstant: ToolbarLayout.minimumSearchWidth
+            ),
+            preferredWidth,
+        ])
     }
 
     private func configureViewModeControl() {
@@ -422,6 +537,25 @@ public final class ExplorerBrowserViewController: NSViewController {
         viewModeControl.action = #selector(changeViewMode(_:))
         viewModeControl.setAccessibilityLabel("View mode")
         viewModeControl.identifier = NSUserInterfaceItemIdentifier("browser.viewMode")
+        viewModeControl.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    private func configureDualPaneButton() {
+        dualPaneButton.image = NSImage(
+            systemSymbolName: "rectangle.split.2x1",
+            accessibilityDescription: "Show Split View"
+        )
+        dualPaneButton.bezelStyle = .inline
+        dualPaneButton.isBordered = false
+        dualPaneButton.target = self
+        dualPaneButton.action = #selector(toggleDualPane(_:))
+        dualPaneButton.identifier = NSUserInterfaceItemIdentifier("browser.dualPane")
+        dualPaneButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            dualPaneButton.widthAnchor.constraint(equalToConstant: 24),
+            dualPaneButton.heightAnchor.constraint(equalToConstant: 24),
+        ])
+        setDualPaneActive(false)
     }
 
     private func configureStatusLabels() {
@@ -464,6 +598,10 @@ public final class ExplorerBrowserViewController: NSViewController {
         _ = emit(.setViewMode(sender.selectedSegment == 1 ? .icons : .details))
     }
 
+    @objc private func toggleDualPane(_ sender: NSButton) {
+        _ = emit(.toggleDualPane)
+    }
+
     @objc private func submitSearch(_ sender: Any?) {
         notifySearchChange()
     }
@@ -488,7 +626,8 @@ extension ExplorerBrowserViewController: NSSearchFieldDelegate {
 extension ExplorerBrowserViewController: NSSplitViewDelegate {
     public func splitViewDidResizeSubviews(_ notification: Notification) {
         guard canReportSidebarWidth, !isApplyingSidebarWidth,
-              let splitView, splitView.subviews.count > 1 else { return }
+              let splitView, notification.object as? NSSplitView === splitView,
+              isSidebarVisible, splitView.subviews.count > 1 else { return }
         let width = splitView.subviews[0].frame.width
         guard width >= SidebarLayout.minimumWidth,
               width <= SidebarLayout.maximumWidth else { return }
@@ -551,4 +690,11 @@ private enum SidebarLayout {
     static let minimumWidth: CGFloat = 148
     static let maximumWidth: CGFloat = 300
     static let minimumContentWidth: CGFloat = 480
+}
+
+private enum ToolbarLayout {
+    static let preferredBreadcrumbWidth: CGFloat = 260
+    static let minimumBreadcrumbWidth: CGFloat = 92
+    static let preferredSearchWidth: CGFloat = 150
+    static let minimumSearchWidth: CGFloat = 32
 }

@@ -48,6 +48,7 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        windowControllers.forEach { $0.persistRestorableState() }
         let activeControllers = windowControllers.filter(\.hasActiveFileOperations)
         guard !activeControllers.isEmpty else { return .terminateNow }
         guard !isReplyingToTermination else { return .terminateLater }
@@ -116,6 +117,14 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         currentWindowController?.togglePreview()
     }
 
+    @objc func toggleDualPane(_ sender: Any?) {
+        currentWindowController?.toggleDualPane()
+    }
+
+    @objc func focusOtherPane(_ sender: Any?) {
+        currentWindowController?.focusOtherPane()
+    }
+
     @objc func toggleHiddenFiles(_ sender: Any?) {
         applyShowsHiddenFiles(!settings.showsHiddenFiles)
     }
@@ -143,6 +152,8 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func cut(_ sender: Any?) { currentWindowController?.performFileCommand(.cut) }
     @objc func paste(_ sender: Any?) { currentWindowController?.performFileCommand(.paste) }
     @objc func duplicate(_ sender: Any?) { currentWindowController?.performFileCommand(.duplicate) }
+    @objc func copyToOtherPane(_ sender: Any?) { currentWindowController?.copySelectionToOtherPane() }
+    @objc func moveToOtherPane(_ sender: Any?) { currentWindowController?.moveSelectionToOtherPane() }
     @objc func moveToTrash(_ sender: Any?) { currentWindowController?.performFileCommand(.moveToTrash) }
     @objc func deletePermanently(_ sender: Any?) { currentWindowController?.performFileCommand(.deletePermanently) }
     @objc func quickLook(_ sender: Any?) { currentWindowController?.performFileCommand(.quickLook) }
@@ -163,12 +174,19 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         case #selector(cut(_:)): return currentWindowController?.canPerformFileCommand(.cut) ?? false
         case #selector(paste(_:)): return currentWindowController?.canPerformFileCommand(.paste) ?? false
         case #selector(duplicate(_:)): return currentWindowController?.canPerformFileCommand(.duplicate) ?? false
+        case #selector(copyToOtherPane(_:)), #selector(moveToOtherPane(_:)):
+            return currentWindowController?.canTransferSelectionToOtherPane ?? false
         case #selector(moveToTrash(_:)): return currentWindowController?.canPerformFileCommand(.moveToTrash) ?? false
         case #selector(deletePermanently(_:)): return currentWindowController?.canPerformFileCommand(.deletePermanently) ?? false
         case #selector(quickLook(_:)): return currentWindowController?.canPerformFileCommand(.quickLook) ?? false
         case #selector(togglePreview(_:)):
             menuItem.state = currentWindowController?.isPreviewVisible == true ? .on : .off
             return currentWindowController != nil
+        case #selector(toggleDualPane(_:)):
+            menuItem.state = currentWindowController?.isDualPaneEnabled == true ? .on : .off
+            return currentWindowController != nil
+        case #selector(focusOtherPane(_:)):
+            return currentWindowController?.canFocusOtherPane ?? false
         case #selector(toggleHiddenFiles(_:)):
             menuItem.state = settings.showsHiddenFiles ? .on : .off
             return true
@@ -259,6 +277,17 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         rename.target = self
         let duplicate = fileMenu.addItem(withTitle: "Duplicate", action: #selector(duplicate(_:)), keyEquivalent: "d")
         duplicate.target = self
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(
+            withTitle: "Copy to Other Pane",
+            action: #selector(copyToOtherPane(_:)),
+            keyEquivalent: "\u{F708}"
+        ).target = self
+        fileMenu.addItem(
+            withTitle: "Move to Other Pane",
+            action: #selector(moveToOtherPane(_:)),
+            keyEquivalent: "\u{F709}"
+        ).target = self
         fileMenu.addItem(withTitle: "Move to Trash", action: #selector(moveToTrash(_:)), keyEquivalent: "").target = self
         let deleteImmediately = fileMenu.addItem(
             withTitle: "Delete Immediately…",
@@ -299,6 +328,9 @@ final class ExplorerAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let viewMenu = NSMenu(title: "View")
         addMenuItem("as Details", action: #selector(showDetails(_:)), key: "1", modifiers: .command, to: viewMenu)
         addMenuItem("as Icons", action: #selector(showIcons(_:)), key: "2", modifiers: .command, to: viewMenu)
+        viewMenu.addItem(.separator())
+        addMenuItem("Dual Pane", action: #selector(toggleDualPane(_:)), key: "\\", modifiers: .command, to: viewMenu)
+        addMenuItem("Focus Other Pane", action: #selector(focusOtherPane(_:)), key: "\\", modifiers: [.command, .shift], to: viewMenu)
         viewMenu.addItem(.separator())
         addMenuItem("Hidden Files", action: #selector(toggleHiddenFiles(_:)), key: ".", modifiers: [.command, .shift], to: viewMenu)
         addMenuItem("Preview Pane", action: #selector(togglePreview(_:)), key: "p", modifiers: [.command, .shift], to: viewMenu)

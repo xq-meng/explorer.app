@@ -24,6 +24,15 @@ ExplorerApp         Lifecycle, dependency composition, tabs, and persisted state
 - Run Undo/Redo through the same conflict validation; replacement operations are intentionally not recorded as undoable.
 - Move across volumes by copying successfully before removing the source.
 - Send normal deletion to the Trash.
+- Compose two independent tab sessions for dual-pane browsing. Window-level
+  command routing follows the highlighted active pane, while F5/F6 transfers
+  target the other pane through the shared safe operation queue.
+- Keep Favorites, volumes, and network locations in one window-level sidebar
+  outside the pane split. Sidebar actions route to the active session, so the
+  two file panes remain structurally equal.
+- Keep the dual-pane snapshot format and validation boundary versioned for
+  explicit restoration flows. Normal window and tab creation deliberately
+  starts with one pane and does not consume a previously saved split session.
 - Keep long-running I/O cancellable and off the main thread.
 - Treat filesystem notifications as invalidation signals and verify disk state again.
 - Do not use path strings as the sole identity of a file.

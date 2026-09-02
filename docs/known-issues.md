@@ -25,7 +25,7 @@ Keep a separate backup of important data while using preview builds. Do not test
 ## Browsing and state restoration
 
 - Directory loading currently builds and sorts a complete snapshot before showing it. The 100,000-item performance target has not been validated, and very large or slow directories may take noticeable time.
-- Explorer restores the window frame, sidebar width, global view mode, preview visibility, hidden-file setting, and Favorites. It does not restore open windows and tabs, the selected tab, per-tab history and sorting, selection, or scroll position.
+- Explorer restores the window frame, sidebar width, global view mode, preview visibility, hidden-file setting, and Favorites. Fresh windows and tabs intentionally start with one pane; open windows, native tabs, and browsing sessions are not restored.
 - External directory changes trigger a delayed full refresh. Selection is preserved when possible, but scroll position can move after a refresh or a high-frequency change burst.
 - The sidebar is a list of location shortcuts, not an expandable directory tree. Network does not discover remote servers; mounted network volumes appear with other mounted volumes.
 

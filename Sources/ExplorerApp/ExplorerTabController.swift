@@ -8,15 +8,15 @@ import ExplorerUI
 @MainActor
 final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresenting, ExplorerTabFileWorking {
     var onEvent: ((ExplorerTabEvent) -> Void)?
+    var onActivate: (() -> Void)?
 
-    let browser = ExplorerBrowserViewController()
+    let browser = ExplorerBrowserViewController(showsSidebar: false)
     private let homeURL: URL
     let searchCoordinator = ExplorerTabSearchCoordinator()
     let thumbnailCoordinator = ExplorerTabThumbnailCoordinator()
     private let operationCoordinator: ExplorerTabOperationCoordinator
     private lazy var quickLookCoordinator = ExplorerQuickLookCoordinator(owner: self)
     let clipboard: FileClipboardService
-    private let initialSidebarWidth: CGFloat?
     private let navigation = ExplorerTabNavigationCoordinator()
     private let files = ExplorerTabFileCoordinator()
     private(set) var viewMode: BrowserViewMode
@@ -26,6 +26,8 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
     var selection: Set<URL> = []
     private var contentState = ExplorerTabContentState()
     private var didStart = false
+    private var pendingRestoredSelection: Set<URL>?
+    private var pendingRestoredScrollPosition: BrowserScrollPosition?
     var pendingInlineRenameURL: URL?
     var homePageModel: BrowserHomePageModel
     var occupiedDirectoryURLs: Set<URL> = []
@@ -45,12 +47,10 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
 
     init(
         homeURL: URL,
-        sidebarLocations: [BrowserSidebarLocation],
         initialViewMode: BrowserViewMode,
         initialSortDescriptor: BrowserSortDescriptor,
         initialShowsPreview: Bool,
         initialShowsHiddenFiles: Bool,
-        sidebarWidth: CGFloat?,
         homePageModel: BrowserHomePageModel = .empty,
         operationQueue: FileOperationQueue,
         clipboard: FileClipboardService
@@ -60,7 +60,6 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         sortDescriptor = initialSortDescriptor
         showsPreview = initialShowsPreview
         showsHiddenFiles = initialShowsHiddenFiles
-        initialSidebarWidth = sidebarWidth
         self.homePageModel = homePageModel
         operationCoordinator = ExplorerTabOperationCoordinator(queue: operationQueue)
         self.clipboard = clipboard
@@ -79,7 +78,6 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
             name: NSApplication.didBecomeActiveNotification,
             object: nil
         )
-        browser.displaySidebarLocations(sidebarLocations)
         browser.setViewMode(initialViewMode)
         browser.setSortDescriptor(initialSortDescriptor)
         browser.setPreviewVisible(initialShowsPreview)
@@ -105,7 +103,6 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
             browserView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         browser.setSortDescriptor(sortDescriptor)
-        if let initialSidebarWidth { browser.setSidebarWidth(initialSidebarWidth) }
     }
 
     var displayTitle: String {
@@ -122,6 +119,39 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         navigation.request(location, origin: .newLocation)
     }
 
+    func restore(from state: ExplorerPaneRestorationState) {
+        didStart = true
+        viewMode = state.viewMode
+        sortDescriptor = state.sortDescriptor
+        selection = Set(state.selection.map(\.standardizedFileURL))
+        pendingRestoredSelection = selection
+        pendingRestoredScrollPosition = state.scrollPosition
+        browser.setViewMode(state.viewMode)
+        browser.setSortDescriptor(state.sortDescriptor)
+        navigation.restore(
+            location: state.location,
+            backHistory: state.backHistory,
+            forwardHistory: state.forwardHistory
+        )
+    }
+
+    func restorationState() -> ExplorerPaneRestorationState? {
+        guard let currentLocation else { return nil }
+        return ExplorerPaneRestorationState(
+            location: currentLocation,
+            backHistory: navigation.backHistory,
+            forwardHistory: navigation.forwardHistory,
+            selection: (pendingRestoredSelection ?? selection)
+                .map(\.standardizedFileURL)
+                .sorted { $0.path < $1.path },
+            viewMode: viewMode,
+            sortDescriptor: sortDescriptor,
+            scrollPosition: isShowingComputer
+                ? nil
+                : pendingRestoredScrollPosition ?? browser.fileContentScrollPosition()
+        )
+    }
+
     func cancelLoading() {
         searchCoordinator.cancel()
         thumbnailCoordinator.cancelAll()
@@ -134,6 +164,7 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         browser.setViewMode(mode)
         if mode == .details { thumbnailCoordinator.cancelAll() }
         emit(.viewModeChange(mode))
+        emit(.restorationStateChange)
     }
 
     var canChangeViewMode: Bool { !isShowingComputer }
@@ -143,6 +174,7 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         sortDescriptor = descriptor
         browser.setSortDescriptor(descriptor)
         navigation.perform(.refresh)
+        emit(.restorationStateChange)
     }
 
     func setShowsHiddenFiles(_ showsHiddenFiles: Bool) {
@@ -162,8 +194,14 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         setPreviewVisible(!showsPreview)
     }
 
-    func updateSidebarLocations(_ locations: [BrowserSidebarLocation]) {
-        browser.displaySidebarLocations(locations)
+    func configurePanePresentation(isActive: Bool, isDualPane: Bool) {
+        browser.setPaneActive(isActive, showsIndicator: isDualPane)
+        browser.setDualPaneActive(isDualPane)
+        browser.setPreviewVisible(showsPreview && (!isDualPane || isActive))
+    }
+
+    func focusFileContent() {
+        browser.focusFileContent()
     }
 
     func updateHomePage(_ model: BrowserHomePageModel) {
@@ -196,13 +234,49 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
     func presentDirectory(_ snapshot: DirectorySnapshot, overlay: [FileItem], at location: BrowserLocation) {
         contentState.showDirectory(snapshot, overlay: overlay)
         let visibleItems = contentState.visibleItems.sorted(using: sortDescriptor.fileSortDescriptor)
-        selection.formIntersection(Set(visibleItems.map(\.url)))
+        let visibleURLs = Set(visibleItems.map(\.url))
+        if let pendingRestoredSelection {
+            let visibleURLByName = Dictionary(
+                visibleItems.map { ($0.url.lastPathComponent, $0.url) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let restoredSelection = Set(pendingRestoredSelection.compactMap { savedURL in
+                visibleURLs.contains(savedURL)
+                    ? visibleItems.first(where: { $0.url == savedURL })?.url
+                    : visibleURLByName[savedURL.lastPathComponent]
+            })
+            self.pendingRestoredSelection = restoredSelection
+            selection = restoredSelection
+        } else {
+            selection.formIntersection(visibleURLs)
+        }
         if let pendingInlineRenameURL,
            visibleItems.contains(where: { $0.url == pendingInlineRenameURL }) {
             selection = [pendingInlineRenameURL]
         }
         browser.displayLocation(location, trail: ExplorerTabNavigation.breadcrumbTrail(for: location))
         browser.displayRows(visibleItems.map(BrowserFileRow.init), selecting: selection)
+        if let pendingRestoredSelection {
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.pendingRestoredSelection == pendingRestoredSelection else { return }
+                self.selection = pendingRestoredSelection
+                self.browser.selectFileURLs(pendingRestoredSelection)
+                self.pendingRestoredSelection = nil
+                self.updateQuickLookSelection()
+                self.pushViewState()
+                self.emit(.restorationStateChange)
+            }
+        }
+        if let pendingRestoredScrollPosition {
+            browser.restoreFileContentScrollPosition(pendingRestoredScrollPosition)
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.pendingRestoredScrollPosition == pendingRestoredScrollPosition else { return }
+                self.pendingRestoredScrollPosition = nil
+                self.emit(.restorationStateChange)
+            }
+        }
         if let pendingInlineRenameURL,
            visibleItems.contains(where: { $0.url == pendingInlineRenameURL }) {
             self.pendingInlineRenameURL = nil
@@ -210,6 +284,7 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
             browser.beginRenaming(pendingInlineRenameURL)
         }
         emit(.titleChange(displayTitle))
+        emit(.restorationStateChange)
         pushViewState()
         let label = "\(visibleItems.count) \(visibleItems.count == 1 ? "item" : "items")"
         browser.showStatus(
@@ -220,10 +295,12 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
     func presentComputer() {
         contentState.showHome()
         selection = []
+        pendingRestoredSelection = nil
         pendingInlineRenameURL = nil
         browser.displayHomePage(homePageModel)
         browser.selectSidebarLocation(.computer)
         emit(.titleChange(displayTitle))
+        emit(.restorationStateChange)
         pushViewState()
     }
 
@@ -253,6 +330,11 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
         navigation.perform(command)
     }
 
+    @discardableResult
+    func performSidebarAction(_ action: BrowserAction) -> Bool {
+        handle(action)
+    }
+
     func request(_ location: BrowserLocation, origin: NavigationOrigin) {
         navigation.request(location, origin: origin)
     }
@@ -268,7 +350,9 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
     }
 
     func pushViewState() {
-        browser.viewState = makeViewState()
+        let state = makeViewState()
+        browser.viewState = state
+        emit(.viewStateChange(state))
     }
 
     func favoriteURLToAdd() -> URL? {
@@ -291,8 +375,11 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
     }
 
     private func configureCallbacks() {
+        browser.onActivate = { [weak self] in self?.onActivate?() }
         browser.onAction = { [weak self] action in
-            self?.handle(action) ?? false
+            guard let self else { return false }
+            self.onActivate?()
+            return self.handle(action)
         }
         operationCoordinator.onStatus = { [weak self] message in
             self?.browser.showStatus(message)
@@ -331,6 +418,8 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
             )
         case let .openLocationInNewTab(location):
             emit(.openLocationInNewTab(location))
+        case .toggleDualPane:
+            emit(.toggleDualPane)
         case let .createFolder(parent):
             files.createNewFolder(in: parent)
         case let .trash(url):
@@ -353,8 +442,9 @@ final class ExplorerTabController: NSViewController, ExplorerTabNavigationPresen
             selection = urls
             updateQuickLookSelection()
             pushViewState()
-        case let .sidebarWidthChange(width):
-            emit(.sidebarWidthChange(width))
+            emit(.restorationStateChange)
+        case .sidebarWidthChange:
+            break
         case let .search(query):
             filterCurrentDirectory(matching: query)
         case .clearSearch:

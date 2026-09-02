@@ -11,6 +11,8 @@ final class ExplorerTabNavigationCoordinator {
     var currentDirectoryURL: URL? { currentLocation?.directoryURL }
     var isShowingComputer: Bool { currentLocation == .computer }
     var isLoadingDirectory: Bool { loadTask != nil }
+    var backHistory: [BrowserLocation] { history.back }
+    var forwardHistory: [BrowserLocation] { history.forward }
 
     private let loader = DirectoryLoader()
     private var history = NavigationHistory<BrowserLocation>()
@@ -65,6 +67,17 @@ final class ExplorerTabNavigationCoordinator {
             }
             request(currentLocation ?? .computer, origin: .refresh)
         }
+    }
+
+    func restore(
+        location: BrowserLocation,
+        backHistory: [BrowserLocation],
+        forwardHistory: [BrowserLocation]
+    ) {
+        cancelAll()
+        history = NavigationHistory(back: backHistory, forward: forwardHistory)
+        currentLocation = location
+        request(location, origin: .refresh)
     }
 
     func request(_ location: BrowserLocation, origin: NavigationOrigin) {

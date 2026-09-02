@@ -29,9 +29,16 @@ Run this checklist for every preview release. Perform destructive checks only in
 - [ ] Launching normally opens My Computer without an empty or white content area.
 - [ ] My Computer shows Favorites, mounted volumes, capacity information, and available network locations.
 - [ ] Sidebar shortcuts open their locations without expanding as a directory tree.
+- [ ] The window has one shared sidebar outside the pane split; its shortcuts navigate only the active pane.
 - [ ] Back, Forward, Up, Refresh, breadcrumbs, and Command-L path entry navigate correctly.
 - [ ] Opening one or more folders through Finder or Launch Services creates the expected tabs.
-- [ ] New windows and tabs have independent paths, histories, and selections.
+- [ ] New windows and tabs start with one pane and have independent paths, histories, and selections.
+- [ ] Command-Backslash toggles dual-pane mode; Command-Shift-Backslash switches the highlighted active pane without changing either path.
+- [ ] The split-view button beside Details/Icons opens a second pane; clicking it in either pane closes the split and keeps that pane.
+- [ ] Every newly opened split starts with equal-width left and right panes; dragging the divider still resizes them normally.
+- [ ] Clicking either pane's toolbar, address bar, file area, preview, or empty background moves the subtle active-pane indicator and command routing to that pane.
+- [ ] Each pane keeps independent navigation, sorting, search, and selection; closing the split retains the active pane.
+- [ ] Relaunch starts with one pane even if the previous window was using dual-pane mode.
 - [ ] Closing tabs, closing the final tab, and quitting the app do not crash.
 - [ ] Closing a tab/window or quitting during an operation defaults to keeping Explorer open; confirming cancellation waits for the queue to stop.
 
@@ -59,6 +66,7 @@ Run this checklist for every preview release. Perform destructive checks only in
 - [ ] Backspace navigates to the previous location without mutating the selection.
 - [ ] New Folder creates a folder and begins inline rename.
 - [ ] Rename, Copy, Cut, Paste, Duplicate, and internal drag and drop operate on the intended items and destination.
+- [ ] F5 copies and F6 moves the active pane selection to the other pane, with conflicts and progress handled by the normal operation queue.
 - [ ] Same-name conflicts exercise Replace, Keep Both, Skip, Stop, and Apply to All.
 - [ ] A failed replacement restores the original destination.
 - [ ] Simulated `backupCreated` recovery restores the original destination, and simulated `replacementCompleted` recovery keeps the replacement and removes its backup.

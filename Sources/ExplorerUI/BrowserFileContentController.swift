@@ -9,6 +9,7 @@ import AppKit
 final class BrowserFileContentController: NSViewController {
     var onAction: ((BrowserAction) -> Bool)?
     var onSelectionPresentationChange: (([BrowserFileRow]) -> Void)?
+    var onActivate: (() -> Void)?
     var viewState = BrowserViewState.empty
 
     private let tableView = BrowserFileTableView()
@@ -23,6 +24,7 @@ final class BrowserFileContentController: NSViewController {
     private var cutURLs = Set<URL>()
     private var renameWasCancelled = false
     private var isApplyingSortDescriptor = false
+    private var isApplyingSelection = false
 
     override func loadView() {
         thumbnailCache.countLimit = 256
@@ -50,10 +52,12 @@ final class BrowserFileContentController: NSViewController {
 
     func display(_ rows: [BrowserFileRow], selecting selectedURLs: Set<URL>) {
         loadViewIfNeeded()
+        isApplyingSelection = true
         fileRows = rows
         tableView.reloadData()
         collectionView.reloadData()
         selectRows(with: selectedURLs)
+        isApplyingSelection = false
         reportSelectionPresentation()
     }
 
@@ -128,9 +132,11 @@ final class BrowserFileContentController: NSViewController {
             return
         }
         let selectedIndexes = selectedItemIndexes
+        isApplyingSelection = true
         viewMode = mode
         tableView.selectRowIndexes(selectedIndexes, byExtendingSelection: false)
         collectionView.selectionIndexes = selectedIndexes
+        isApplyingSelection = false
         updateViewMode()
         if mode == .icons {
             DispatchQueue.main.async { [weak self] in self?.requestVisibleThumbnails() }
@@ -152,6 +158,90 @@ final class BrowserFileContentController: NSViewController {
         guard let item = collectionView.item(at: indexPath) as? BrowserIconCollectionItem else { return }
         let row = fileRows[index]
         item.display(row, thumbnail: image, isCut: cutURLs.contains(row.url))
+    }
+
+    func focusContent() {
+        loadViewIfNeeded()
+        view.window?.makeFirstResponder(viewMode == .details ? tableView : collectionView)
+    }
+
+    func setSelection(_ urls: Set<URL>) {
+        loadViewIfNeeded()
+        isApplyingSelection = true
+        selectRows(with: urls)
+        isApplyingSelection = false
+        reportSelectionPresentation()
+    }
+
+    func scrollPosition() -> BrowserScrollPosition? {
+        guard isViewLoaded, !fileRows.isEmpty else { return nil }
+        let scrollView = viewMode == .details ? listScrollView : iconScrollView
+        let origin = scrollView.contentView.bounds.origin
+        let anchorIndex: Int?
+        let anchorMinimumY: CGFloat?
+
+        if viewMode == .details {
+            let row = tableView.row(at: NSPoint(x: origin.x, y: origin.y + 1))
+            anchorIndex = fileRows.indices.contains(row) ? row : nil
+            anchorMinimumY = anchorIndex.map { tableView.rect(ofRow: $0).minY }
+        } else {
+            let indexPath = collectionView.indexPathsForVisibleItems()
+                .min { $0.item < $1.item }
+            anchorIndex = indexPath?.item
+            anchorMinimumY = indexPath.flatMap {
+                collectionView.layoutAttributesForItem(at: $0)?.frame.minY
+            }
+        }
+
+        let anchorURL = anchorIndex.flatMap {
+            fileRows.indices.contains($0) ? fileRows[$0].url : nil
+        }
+        return BrowserScrollPosition(
+            anchorURL: anchorURL,
+            horizontalOffset: Double(origin.x),
+            verticalOffset: Double(origin.y),
+            anchorVerticalOffset: Double(origin.y - (anchorMinimumY ?? origin.y))
+        )
+    }
+
+    func restoreScrollPosition(_ position: BrowserScrollPosition) {
+        loadViewIfNeeded()
+        let expectedMode = viewMode
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.viewMode == expectedMode else { return }
+            self.view.layoutSubtreeIfNeeded()
+            self.collectionView.collectionViewLayout?.invalidateLayout()
+            self.collectionView.layoutSubtreeIfNeeded()
+
+            let scrollView = expectedMode == .details ? self.listScrollView : self.iconScrollView
+            let anchorMinimumY: CGFloat? = position.anchorURL.flatMap { anchorURL in
+                guard let index = self.fileRows.firstIndex(where: { row in
+                    row.url == anchorURL
+                        || row.url.lastPathComponent == anchorURL.lastPathComponent
+                }) else {
+                    return nil
+                }
+                if expectedMode == .details {
+                    return self.tableView.rect(ofRow: index).minY
+                }
+                return self.collectionView.layoutAttributesForItem(
+                    at: IndexPath(item: index, section: 0)
+                )?.frame.minY
+            }
+            let requestedY = anchorMinimumY.map {
+                $0 + CGFloat(position.anchorVerticalOffset)
+            } ?? CGFloat(position.verticalOffset)
+            let documentSize = scrollView.documentView?.bounds.size ?? .zero
+            let maximumX = max(0, documentSize.width - scrollView.contentSize.width)
+            let maximumY = max(0, documentSize.height - scrollView.contentSize.height)
+            let target = NSPoint(
+                x: min(maximumX, max(0, CGFloat(position.horizontalOffset))),
+                y: min(maximumY, max(0, requestedY))
+            )
+            scrollView.contentView.scroll(to: target)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            if expectedMode == .icons { self.requestVisibleThumbnails() }
+        }
     }
 
     private func configureTableView() {
@@ -179,6 +269,7 @@ final class BrowserFileContentController: NSViewController {
         tableView.setAccessibilityLabel("Folder contents")
         tableView.menu = makeFileContextMenu()
         tableView.onKeyboardCommand = { [weak self] command in self?.emit(command) }
+        tableView.onActivate = { [weak self] in self?.onActivate?() }
         tableView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
@@ -202,6 +293,7 @@ final class BrowserFileContentController: NSViewController {
         collectionView.setAccessibilityLabel("Folder contents as icons")
         collectionView.menu = makeFileContextMenu()
         collectionView.onKeyboardCommand = { [weak self] command in self?.emit(command) }
+        collectionView.onActivate = { [weak self] in self?.onActivate?() }
         collectionView.registerForDraggedTypes(BrowserDropPasteboard.draggedTypes)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
@@ -583,7 +675,8 @@ extension BrowserFileContentController: NSTableViewDataSource, NSTableViewDelega
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard notification.object as? NSTableView === tableView, viewMode == .details else { return }
+        guard notification.object as? NSTableView === tableView,
+              viewMode == .details, !isApplyingSelection else { return }
         reportSelection()
     }
 
@@ -661,7 +754,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
         willDisplay item: NSCollectionViewItem,
         forRepresentedObjectAt indexPath: IndexPath
     ) {
-        guard viewMode == .icons else { return }
+        guard viewMode == .icons, !isApplyingSelection else { return }
         requestThumbnailIfNeeded(at: indexPath)
     }
 
@@ -686,7 +779,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
         _ collectionView: NSCollectionView,
         didSelectItemsAt indexPaths: Set<IndexPath>
     ) {
-        guard viewMode == .icons else { return }
+        guard viewMode == .icons, !isApplyingSelection else { return }
         reportSelection()
         guard NSApp.currentEvent?.clickCount == 2,
               let index = indexPaths.first?.item,
@@ -698,7 +791,7 @@ extension BrowserFileContentController: NSCollectionViewDataSource, NSCollection
         _ collectionView: NSCollectionView,
         didDeselectItemsAt indexPaths: Set<IndexPath>
     ) {
-        guard viewMode == .icons else { return }
+        guard viewMode == .icons, !isApplyingSelection else { return }
         reportSelection()
     }
 }

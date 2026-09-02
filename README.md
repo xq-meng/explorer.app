@@ -16,6 +16,7 @@ Before using a preview build for important files, review the current [known issu
 ## Features
 
 - Multiple windows and tabs, each with its own history
+- Optional dual-pane browsing with independent sessions and F5/F6 transfers
 - Details and icon views, with sortable columns
 - Sidebar for Favorites, mounted volumes, and Network (including iCloud Drive)
 - Clickable breadcrumbs, or type a path with Command-L

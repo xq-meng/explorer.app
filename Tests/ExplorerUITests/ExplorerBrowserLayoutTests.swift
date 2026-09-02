@@ -180,6 +180,7 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
             switch action {
             case .navigation(.back): actions.append("back")
             case .setViewMode(.icons): actions.append("icons")
+            case .toggleDualPane: actions.append("split")
             case .openLocation(.computer): actions.append("computer")
             default: break
             }
@@ -193,8 +194,11 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
             .first { $0.identifier?.rawValue == "browser.viewMode" }
         viewMode?.selectedSegment = 1
         viewMode?.performClick(nil)
+        let split = allDescendants(of: controller.view, as: NSButton.self)
+            .first { $0.identifier?.rawValue == "browser.dualPane" }
+        split?.performClick(nil)
 
-        XCTAssertEqual(actions, ["back", "icons"])
+        XCTAssertEqual(actions, ["back", "icons", "split"])
     }
 
     func testTableSortDescriptorRoutesAStableBrowserSortIntent() {
@@ -982,6 +986,33 @@ final class ExplorerBrowserLayoutTests: XCTestCase {
         }
         XCTAssertEqual(field.placeholderString, "Search")
         XCTAssertEqual(field.accessibilityLabel(), "Search this folder")
+    }
+
+    func testToolbarCompressesSearchBeforeBreadcrumbs() throws {
+        let medium = try toolbarWidths(at: 550)
+        XCTAssertGreaterThanOrEqual(medium.breadcrumb, 259)
+        XCTAssertLessThan(medium.search, 149)
+        XCTAssertGreaterThanOrEqual(medium.search, 31)
+
+        let narrow = try toolbarWidths(at: 430)
+        XCTAssertLessThanOrEqual(narrow.search, 33)
+        XCTAssertLessThan(narrow.breadcrumb, medium.breadcrumb)
+    }
+
+    private func toolbarWidths(at width: CGFloat) throws -> (breadcrumb: CGFloat, search: CGFloat) {
+        let controller = ExplorerBrowserViewController(showsSidebar: false)
+        controller.setPreviewVisible(false)
+        controller.loadView()
+        controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 680)
+        controller.view.layoutSubtreeIfNeeded()
+
+        let breadcrumb = try XCTUnwrap(
+            allDescendants(of: controller.view, as: BrowserBreadcrumbBar.self).first
+        )
+        let search = try XCTUnwrap(
+            allDescendants(of: controller.view, as: NSSearchField.self).first
+        )
+        return (breadcrumb.frame.width, search.frame.width)
     }
 
     func testFolderViewsRegisterPromisedFileDropTypes() {

@@ -22,6 +22,7 @@ public enum BrowserAction {
     case clearSearch
     case requestThumbnail(URL)
     case cancelThumbnail(URL)
+    case toggleDualPane
     case setViewMode(BrowserViewMode)
     case setSort(BrowserSortDescriptor)
     case dropFiles(BrowserFileDrop)

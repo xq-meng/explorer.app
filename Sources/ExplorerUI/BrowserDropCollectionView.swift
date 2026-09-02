@@ -6,6 +6,7 @@ final class BrowserDropCollectionView: NSCollectionView {
     var onDrop: ((NSDraggingInfo, IndexPath?) -> NSDragOperation)?
     var onAcceptDrop: ((NSDraggingInfo, IndexPath?) -> Bool)?
     var onKeyboardCommand: ((BrowserKeyboardCommand) -> Void)?
+    var onActivate: (() -> Void)?
     private var dropTargetIndexPath: IndexPath?
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -26,11 +27,22 @@ final class BrowserDropCollectionView: NSCollectionView {
     }
 
     override func keyDown(with event: NSEvent) {
+        onActivate?()
         if let command = BrowserFileKeyboard.command(from: event) {
             onKeyboardCommand?(command)
             return
         }
         super.keyDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onActivate?()
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onActivate?()
+        super.rightMouseDown(with: event)
     }
 
     private func indexPath(at windowPoint: NSPoint) -> IndexPath? {

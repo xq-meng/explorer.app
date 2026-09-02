@@ -60,8 +60,20 @@ enum BrowserFileKeyboard {
 
 final class BrowserFileTableView: NSTableView {
     var onKeyboardCommand: ((BrowserKeyboardCommand) -> Void)?
+    var onActivate: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onActivate?()
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onActivate?()
+        super.rightMouseDown(with: event)
+    }
 
     override func keyDown(with event: NSEvent) {
+        onActivate?()
         if let command = BrowserFileKeyboard.command(from: event) {
             onKeyboardCommand?(command)
             return

@@ -19,8 +19,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private let settings: ExplorerSettingsStore
     private let homeURL: URL
     private let operationQueue: FileOperationQueue
+    private let clipboard: FileClipboardService
     private let mountedVolumeService: MountedVolumeService
-    private let session: ExplorerTabController
+    private var sessions: [ExplorerTabController]
+    private var activeSession: ExplorerTabController
     private let contentController: ExplorerWindowContentViewController
     private var mountedVolumes: [MountedVolumeMetadata] = []
     private var navigationLocations: ExplorerNavigationLocations
@@ -30,20 +32,26 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private var operationHistory = FileOperationHistory()
     private var historyTask: Task<Void, Never>?
     private var didStartSession = false
+    private var didRestoreDualPane = false
     private let initialState: ExplorerWindowState
+    private let restoresSavedDualPaneSession: Bool
     private var operationSnapshots: [UUID: FileOperationQueueSnapshot] = [:]
     private var operationProgress: [UUID: FileOperationProgress] = [:]
     private var operationOrder: [UUID] = []
     private var isPresentingCloseConfirmation = false
     private var allowsCloseWithActiveOperations = false
     private var closeCancellationTask: Task<Void, Never>?
+    private var paneRestorationTask: Task<Void, Never>?
+    private var paneActivationEventMonitor: Any?
 
     init(
         initialState: ExplorerWindowState? = nil,
         recoveryJournal: FileOperationRecoveryJournal = FileOperationRecoveryJournal(),
-        operationQueue injectedOperationQueue: FileOperationQueue? = nil
+        operationQueue injectedOperationQueue: FileOperationQueue? = nil,
+        settings injectedSettings: ExplorerSettingsStore? = nil,
+        restoresSavedDualPaneSession: Bool = false
     ) {
-        let settings = ExplorerSettingsStore()
+        let settings = injectedSettings ?? ExplorerSettingsStore()
         let homeURL = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
         let operationQueue = injectedOperationQueue
             ?? FileOperationQueue(engine: FileOperationEngine(recoveryJournal: recoveryJournal))
@@ -62,26 +70,31 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         )
         let session = ExplorerTabController(
             homeURL: homeURL,
-            sidebarLocations: navigationLocations.sidebar,
             initialViewMode: resolvedState.viewMode,
             initialSortDescriptor: resolvedState.sortDescriptor,
             initialShowsPreview: settings.showsPreview,
             initialShowsHiddenFiles: settings.showsHiddenFiles,
-            sidebarWidth: settings.sidebarWidth,
             homePageModel: navigationLocations.homePage,
             operationQueue: operationQueue,
             clipboard: clipboard
         )
-        let contentController = ExplorerWindowContentViewController(browserController: session)
+        let contentController = ExplorerWindowContentViewController(
+            browserController: session,
+            sidebarLocations: navigationLocations.sidebar,
+            sidebarWidth: settings.sidebarWidth
+        )
 
         self.settings = settings
         self.homeURL = homeURL
         self.operationQueue = operationQueue
+        self.clipboard = clipboard
         self.mountedVolumeService = mountedVolumeService
-        self.session = session
+        sessions = [session]
+        activeSession = session
         self.contentController = contentController
         self.navigationLocations = navigationLocations
         self.initialState = resolvedState
+        self.restoresSavedDualPaneSession = restoresSavedDualPaneSession
 
         let defaultFrame = NSRect(x: 0, y: 0, width: 1280, height: 760)
         let storedFrame = settings.windowFrame
@@ -105,8 +118,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         contentController.onCancelOperation = { [weak self] in self?.cancelCurrentOperation() }
-        session.onEvent = { [weak self] event in self?.handle(event) }
-        session.setOccupiedDirectoryURLs(navigationLocations.occupiedDirectoryURLs)
+        contentController.onSidebarWidthChange = { [weak self] width in
+            self?.settings.sidebarWidth = width
+        }
+        contentController.onSidebarAction = { [weak self] action in
+            _ = self?.activeSession.performSidebarAction(action)
+        }
+        configureSession(session)
         observeOperationEvents()
     }
 
@@ -114,25 +132,27 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
+        installPaneActivationEventMonitorIfNeeded()
         startSessionIfNeeded()
+        restoreDualPaneIfNeeded()
         startVolumeLoading()
     }
 
-    func perform(_ command: BrowserNavigationCommand) { session.perform(command) }
+    func perform(_ command: BrowserNavigationCommand) { activeSession.perform(command) }
 
     var stateForNewTab: ExplorerWindowState {
         ExplorerWindowState(
-            location: session.currentLocation ?? .computer,
-            viewMode: session.viewMode,
-            sortDescriptor: session.sortDescriptor
+            location: activeSession.currentLocation ?? .computer,
+            viewMode: activeSession.viewMode,
+            sortDescriptor: activeSession.sortDescriptor
         )
     }
 
     func stateForNewTab(at location: BrowserLocation) -> ExplorerWindowState {
         ExplorerWindowState(
             location: location,
-            viewMode: session.viewMode,
-            sortDescriptor: session.sortDescriptor
+            viewMode: activeSession.viewMode,
+            sortDescriptor: activeSession.sortDescriptor
         )
     }
 
@@ -140,26 +160,31 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         onRequestNewTab?(stateForNewTab)
     }
 
-    private func handle(_ event: ExplorerTabEvent) {
+    private func handle(_ event: ExplorerTabEvent, from session: ExplorerTabController) {
         switch event {
         case let .titleChange(title):
-            updateWindowTitle(title)
+            if session === activeSession { updateWindowTitle(title) }
         case let .viewModeChange(mode):
             settings.viewMode = mode
         case let .previewVisibilityChange(isVisible):
             settings.showsPreview = isVisible
-        case let .sidebarWidthChange(width):
-            settings.sidebarWidth = width
         case let .operationCompleted(operation, result):
             recordUndoPlan(for: operation, result: result)
         case let .openLocationInNewTab(location):
             onRequestNewTab?(stateForNewTab(at: location))
+        case .toggleDualPane:
+            setDualPaneEnabled(!isDualPaneEnabled)
         case let .removeFavorite(url):
             removeFavorite(url)
         case let .addFavorite(url):
             addFavorite(url)
         case .homePageRefresh:
             reloadVolumes()
+        case .restorationStateChange:
+            persistDualPaneRestorationState()
+            if session === activeSession { synchronizeSharedSidebar() }
+        case let .viewStateChange(state):
+            if session === activeSession { contentController.setSidebarViewState(state) }
         }
     }
 
@@ -168,7 +193,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     var hasActiveFileOperations: Bool {
-        session.hasPendingFileOperations
+        sessions.contains(where: \.hasPendingFileOperations)
             || historyTask != nil
             || operationSnapshots.values.contains {
                 $0.state == .queued || $0.state == .running
@@ -181,28 +206,94 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         await operationQueue.waitUntilIdle()
     }
 
-    func setViewMode(_ mode: BrowserViewMode) { session.setViewMode(mode) }
-    var canChangeViewMode: Bool { session.canChangeViewMode }
-    func togglePreview() { session.togglePreview() }
+    func setViewMode(_ mode: BrowserViewMode) { activeSession.setViewMode(mode) }
+    var canChangeViewMode: Bool { activeSession.canChangeViewMode }
+    func togglePreview() { setPreviewVisible(!settings.showsPreview) }
     func setShowsHiddenFiles(_ isVisible: Bool) {
         settings.showsHiddenFiles = isVisible
-        session.setShowsHiddenFiles(isVisible)
+        sessions.forEach { $0.setShowsHiddenFiles(isVisible) }
     }
     func setPreviewVisible(_ isVisible: Bool) {
         settings.showsPreview = isVisible
-        session.setPreviewVisible(isVisible)
+        sessions.forEach { $0.setPreviewVisible(isVisible) }
+        updatePanePresentations()
     }
-    var isPreviewVisible: Bool { session.showsPreview }
+    var isPreviewVisible: Bool { settings.showsPreview }
+    var isDualPaneEnabled: Bool { sessions.count == 2 }
+    var activePaneIndex: Int? { sessions.firstIndex { $0 === activeSession } }
+    var canFocusOtherPane: Bool { isDualPaneEnabled }
+    var canTransferSelectionToOtherPane: Bool {
+        guard let other = otherSession,
+              let destination = other.currentDirectoryURL,
+              !activeSession.selection.isEmpty else { return false }
+        return activeSession.currentDirectoryURL != destination
+    }
     var canUndo: Bool { historyTask == nil && operationHistory.canUndo }
     var canRedo: Bool { historyTask == nil && operationHistory.canRedo }
     var undoActionName: String? { operationHistory.undoActionName }
     var redoActionName: String? { operationHistory.redoActionName }
     var canAddCurrentFolderToFavorites: Bool {
-        guard let url = session.currentLocation?.directoryURL else { return false }
+        guard let url = activeSession.currentLocation?.directoryURL else { return false }
         return canAddFavorite(url)
     }
-    func performFileCommand(_ command: BrowserFileCommand) { session.performFileCommand(command) }
-    func canPerformFileCommand(_ command: BrowserFileCommand) -> Bool { session.canPerformFileCommand(command) }
+    func performFileCommand(_ command: BrowserFileCommand) { activeSession.performFileCommand(command) }
+    func canPerformFileCommand(_ command: BrowserFileCommand) -> Bool { activeSession.canPerformFileCommand(command) }
+
+    func toggleDualPane() {
+        setDualPaneEnabled(!isDualPaneEnabled)
+    }
+
+    func setDualPaneEnabled(_ isEnabled: Bool) {
+        guard isEnabled != isDualPaneEnabled else { return }
+        if isEnabled {
+            let primary = activeSession
+            let secondary = makeSession(
+                viewMode: primary.viewMode,
+                sortDescriptor: primary.sortDescriptor
+            )
+            sessions.append(secondary)
+            configureSession(secondary)
+            contentController.showSplitPane(
+                primary: primary,
+                secondary: secondary
+            )
+            if didStartSession {
+                secondary.start(at: primary.currentLocation ?? initialState.location)
+            }
+            settings.dualPaneEnabled = true
+        } else {
+            guard !sessions.contains(where: \.hasPendingFileOperations) else {
+                activeSession.showStatus("Wait for pane file operations to finish before closing split view.")
+                return
+            }
+            persistDualPaneRestorationState()
+            let survivor = activeSession
+            let removedSessions = sessions.filter { $0 !== survivor }
+            removedSessions.forEach {
+                $0.closeQuickLook()
+                $0.cancelLoading()
+            }
+            sessions = [survivor]
+            contentController.showSinglePane(survivor)
+            settings.dualPaneEnabled = false
+        }
+        updatePanePresentations()
+        updateWindowTitle(activeSession.displayTitle)
+        persistDualPaneRestorationState()
+    }
+
+    func focusOtherPane() {
+        guard let other = otherSession else { return }
+        activate(other, focusContent: true)
+    }
+
+    func copySelectionToOtherPane() {
+        transferSelectionToOtherPane(isMove: false)
+    }
+
+    func moveSelectionToOtherPane() {
+        transferSelectionToOtherPane(isMove: true)
+    }
 
     func undoLastOperation() {
         guard historyTask == nil, let plan = operationHistory.take(.undo) else { return }
@@ -215,7 +306,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func addCurrentFolderToFavorites() {
-        guard let url = session.currentLocation?.directoryURL else { return }
+        guard let url = activeSession.currentLocation?.directoryURL else { return }
         addFavorite(url)
     }
 
@@ -223,7 +314,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         refreshSidebarLocations()
     }
 
-    func windowDidBecomeKey(_ notification: Notification) { updateWindowTitle(session.displayTitle) }
+    func windowDidBecomeKey(_ notification: Notification) { updateWindowTitle(activeSession.displayTitle) }
+    func windowDidResignKey(_ notification: Notification) { persistWindowState() }
     func windowDidEndLiveResize(_ notification: Notification) { persistWindowState() }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !allowsCloseWithActiveOperations else { return true }
@@ -255,14 +347,173 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         persistWindowState()
-        session.closeQuickLook()
-        session.cancelLoading()
+        sessions.forEach {
+            $0.closeQuickLook()
+            $0.cancelLoading()
+        }
         operationEventTask?.cancel()
         volumeLoadTask?.cancel()
         historyTask?.cancel()
         closeCancellationTask?.cancel()
+        paneRestorationTask?.cancel()
+        removePaneActivationEventMonitor()
         onClose?()
     }
+
+    private var otherSession: ExplorerTabController? {
+        sessions.first { $0 !== activeSession }
+    }
+
+    private func makeSession(
+        viewMode: BrowserViewMode,
+        sortDescriptor: BrowserSortDescriptor
+    ) -> ExplorerTabController {
+        ExplorerTabController(
+            homeURL: homeURL,
+            initialViewMode: viewMode,
+            initialSortDescriptor: sortDescriptor,
+            initialShowsPreview: settings.showsPreview,
+            initialShowsHiddenFiles: settings.showsHiddenFiles,
+            homePageModel: navigationLocations.homePage,
+            operationQueue: operationQueue,
+            clipboard: clipboard
+        )
+    }
+
+    private func configureSession(_ session: ExplorerTabController) {
+        session.onEvent = { [weak self, weak session] event in
+            guard let self, let session else { return }
+            self.handle(event, from: session)
+        }
+        session.onActivate = { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.activate(session)
+        }
+        session.setOccupiedDirectoryURLs(navigationLocations.occupiedDirectoryURLs)
+        updatePanePresentations()
+    }
+
+    private func restoreDualPaneIfNeeded() {
+        guard !didRestoreDualPane else { return }
+        didRestoreDualPane = true
+        guard restoresSavedDualPaneSession else {
+            updatePanePresentations()
+            return
+        }
+        guard settings.dualPaneEnabled else {
+            updatePanePresentations()
+            return
+        }
+
+        guard let savedState = settings.dualPaneRestorationState else {
+            setDualPaneEnabled(true)
+            return
+        }
+        let fallbackLocation = initialState.location
+        paneRestorationTask = Task { [weak self] in
+            let restoredPanes = await Self.validatedRestorationStates(
+                savedState.panes,
+                fallback: fallbackLocation
+            )
+            guard !Task.isCancelled, let self,
+                  self.settings.dualPaneEnabled, self.sessions.count == 1 else { return }
+            self.installRestoredDualPane(
+                restoredPanes,
+                activePaneIndex: savedState.activePaneIndex
+            )
+            self.paneRestorationTask = nil
+        }
+    }
+
+    private func installRestoredDualPane(
+        _ restoredPanes: [ExplorerPaneRestorationState],
+        activePaneIndex: Int
+    ) {
+        guard restoredPanes.count == 2 else { return }
+        let primary = sessions[0]
+        let secondary = makeSession(
+            viewMode: restoredPanes[1].viewMode,
+            sortDescriptor: restoredPanes[1].sortDescriptor
+        )
+        sessions.append(secondary)
+        configureSession(secondary)
+        activeSession = sessions[min(max(0, activePaneIndex), sessions.count - 1)]
+        contentController.showSplitPane(
+            primary: primary,
+            secondary: secondary
+        )
+        primary.restore(from: restoredPanes[0])
+        secondary.restore(from: restoredPanes[1])
+        updatePanePresentations()
+        updateWindowTitle(activeSession.displayTitle)
+    }
+
+    private func activate(_ session: ExplorerTabController, focusContent: Bool = false) {
+        guard sessions.contains(where: { $0 === session }) else { return }
+        if activeSession !== session {
+            activeSession.closeQuickLook()
+            activeSession = session
+            updatePanePresentations()
+            updateWindowTitle(session.displayTitle)
+        }
+        synchronizeSharedSidebar()
+        if focusContent { session.focusFileContent() }
+        persistDualPaneRestorationState()
+    }
+
+    private func installPaneActivationEventMonitorIfNeeded() {
+        guard paneActivationEventMonitor == nil else { return }
+        paneActivationEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] event in
+            guard let self, event.window === self.window,
+                  let contentView = self.window?.contentView else { return event }
+            let point = contentView.convert(event.locationInWindow, from: nil)
+            guard let hitView = contentView.hitTest(point),
+                  let session = self.sessions.first(where: { session in
+                      hitView === session.view || hitView.isDescendant(of: session.view)
+                  }) else { return event }
+            self.activate(session)
+            return event
+        }
+    }
+
+    private func removePaneActivationEventMonitor() {
+        guard let paneActivationEventMonitor else { return }
+        NSEvent.removeMonitor(paneActivationEventMonitor)
+        self.paneActivationEventMonitor = nil
+    }
+
+    private func updatePanePresentations() {
+        let isDualPane = isDualPaneEnabled
+        for session in sessions {
+            session.browser.setSidebarVisible(false)
+            session.configurePanePresentation(
+                isActive: session === activeSession,
+                isDualPane: isDualPane
+            )
+        }
+        synchronizeSharedSidebar()
+    }
+
+    private func synchronizeSharedSidebar() {
+        contentController.setSidebarViewState(activeSession.browser.viewState)
+        contentController.selectSidebarLocation(activeSession.currentLocation)
+    }
+
+    private func transferSelectionToOtherPane(isMove: Bool) {
+        guard canTransferSelectionToOtherPane,
+              let destinationSession = otherSession,
+              let destination = destinationSession.currentDirectoryURL else { return }
+        let sources = activeSession.selection.sorted { $0.path < $1.path }
+        let operation: FileOperation = isMove
+            ? .move(sources: sources, to: destination, conflictPolicy: .ask)
+            : .copy(sources: sources, to: destination, conflictPolicy: .ask)
+        activeSession.submit(operation) { [weak destinationSession] _ in
+            destinationSession?.refreshContents()
+        }
+    }
+
     private func buildNavigationLocations() -> ExplorerNavigationLocations {
         ExplorerNavigationLocationBuilder.build(
             homeURL: homeURL,
@@ -272,9 +523,61 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    private static func isDirectory(_ url: URL) -> Bool {
+    private nonisolated static func isDirectory(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private nonisolated static func validatedRestorationStates(
+        _ states: [ExplorerPaneRestorationState],
+        fallback: BrowserLocation
+    ) async -> [ExplorerPaneRestorationState] {
+        var restoredStates: [ExplorerPaneRestorationState] = []
+        restoredStates.reserveCapacity(states.count)
+        for state in states {
+            guard !Task.isCancelled else { return [] }
+            restoredStates.append(validatedRestorationState(state, fallback: fallback))
+        }
+        return restoredStates
+    }
+
+    private nonisolated static func validatedRestorationState(
+        _ state: ExplorerPaneRestorationState,
+        fallback: BrowserLocation
+    ) -> ExplorerPaneRestorationState {
+        let restoredLocation = validRestorationLocation(state.location)
+        let fallback = validRestorationLocation(fallback) ?? .computer
+        let location = restoredLocation ?? fallback
+        return ExplorerPaneRestorationState(
+            location: location,
+            backHistory: state.backHistory.compactMap(validRestorationLocation),
+            forwardHistory: state.forwardHistory.compactMap(validRestorationLocation),
+            selection: restoredLocation == nil
+                ? []
+                : state.selection.map { $0.resolvingSymlinksInPath().standardizedFileURL },
+            viewMode: state.viewMode,
+            sortDescriptor: state.sortDescriptor,
+            scrollPosition: restoredLocation == nil ? nil : state.scrollPosition.map {
+                BrowserScrollPosition(
+                    anchorURL: $0.anchorURL?.resolvingSymlinksInPath(),
+                    horizontalOffset: $0.horizontalOffset,
+                    verticalOffset: $0.verticalOffset,
+                    anchorVerticalOffset: $0.anchorVerticalOffset
+                )
+            }
+        )
+    }
+
+    private nonisolated static func validRestorationLocation(
+        _ location: BrowserLocation
+    ) -> BrowserLocation? {
+        switch location {
+        case .computer:
+            return .computer
+        case let .directory(url):
+            let standardizedURL = url.standardizedFileURL
+            return Self.isDirectory(standardizedURL) ? .directory(standardizedURL) : nil
+        }
     }
 
     private func addFavorite(_ url: URL) {
@@ -282,7 +585,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         guard canAddFavorite(url) else { return }
         settings.addFavorite(url)
         onNavigationLocationsChange?()
-        session.showStatus("Added \(url.lastPathComponent) to Favorites.")
+        activeSession.showStatus("Added \(url.lastPathComponent) to Favorites.")
     }
 
     private func canAddFavorite(_ url: URL) -> Bool {
@@ -293,20 +596,22 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
     private func removeFavorite(_ url: URL) {
         settings.removeFavorite(url)
         onNavigationLocationsChange?()
-        session.showStatus("Removed \(url.lastPathComponent) from Favorites.")
+        activeSession.showStatus("Removed \(url.lastPathComponent) from Favorites.")
     }
 
     private func refreshSidebarLocations() {
         navigationLocations = buildNavigationLocations()
-        session.updateSidebarLocations(navigationLocations.sidebar)
-        session.updateHomePage(navigationLocations.homePage)
-        session.setOccupiedDirectoryURLs(navigationLocations.occupiedDirectoryURLs)
+        contentController.displaySidebarLocations(navigationLocations.sidebar)
+        sessions.forEach {
+            $0.updateHomePage(navigationLocations.homePage)
+            $0.setOccupiedDirectoryURLs(navigationLocations.occupiedDirectoryURLs)
+        }
     }
 
     private func startSessionIfNeeded() {
         guard !didStartSession else { return }
         didStartSession = true
-        session.start(at: initialState.location)
+        sessions.first?.start(at: initialState.location)
     }
 
     private func observeOperationEvents() {
@@ -314,7 +619,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         operationEventTask = Task { [weak self] in
             for await event in events {
                 guard !Task.isCancelled, let self else { return }
-                self.session.handleOperationEvent(event)
+                self.sessions.forEach { $0.handleOperationEvent(event) }
                 self.track(event)
             }
         }
@@ -455,6 +760,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
 
     private func performHistory(_ plan: FileOperationUndoPlan, direction: FileOperationHistoryDirection) {
         let operations = direction == .undo ? plan.undoOperations : plan.redoOperations
+        let session = activeSession
         session.showStatus("\(direction.statusVerb) \(plan.actionName)…")
         let queue = operationQueue
         historyTask = Task { [weak self] in
@@ -467,11 +773,11 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
                 }
                 guard !Task.isCancelled else { throw CancellationError() }
                 self.operationHistory.complete(plan, direction: direction)
-                self.session.refreshContents()
-                self.session.showStatus("\(direction.completedVerb) \(plan.actionName).")
+                self.sessions.forEach { $0.refreshContents() }
+                session.showStatus("\(direction.completedVerb) \(plan.actionName).")
             } catch {
                 self.operationHistory.restore(plan, direction: direction)
-                self.session.showStatus("Unable to \(direction.commandVerb) \(plan.actionName): \(error.localizedDescription)")
+                session.showStatus("Unable to \(direction.commandVerb) \(plan.actionName): \(error.localizedDescription)")
             }
             self.historyTask = nil
         }
@@ -504,19 +810,36 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate {
         window?.tab.title = title
         window?.tab.toolTip = title
     }
-    private func persistWindowState() { if let window { settings.windowFrame = window.frame } }
+    func persistDualPaneRestorationState() {
+        guard sessions.count == 2 else { return }
+        let paneStates = sessions.compactMap { $0.restorationState() }
+        guard paneStates.count == 2, let activePaneIndex else { return }
+        settings.dualPaneRestorationState = ExplorerDualPaneRestorationState(
+            panes: paneStates,
+            activePaneIndex: activePaneIndex
+        )
+    }
+
+    func persistRestorableState() {
+        persistWindowState()
+    }
+
+    private func persistWindowState() {
+        if let window { settings.windowFrame = window.frame }
+        persistDualPaneRestorationState()
+    }
 }
 
 extension ExplorerWindowController {
     @objc nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
-        MainActor.assumeIsolated { session.canAcceptQuickLookControl }
+        MainActor.assumeIsolated { activeSession.canAcceptQuickLookControl }
     }
 
     @objc nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        MainActor.assumeIsolated { session.beginQuickLookControl(panel) }
+        MainActor.assumeIsolated { activeSession.beginQuickLookControl(panel) }
     }
 
     @objc nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        MainActor.assumeIsolated { session.endQuickLookControl(panel) }
+        MainActor.assumeIsolated { activeSession.endQuickLookControl(panel) }
     }
 }
